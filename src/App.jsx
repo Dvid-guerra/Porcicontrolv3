@@ -253,6 +253,19 @@ function Porcicontrol({ user, db, appId }) {
   const [pesoIngresado, setPesoIngresado] = useState('');
   const [fechaPesaje, setFechaPesaje] = useState(new Date().toISOString().split('T')[0]);
 
+  // --- ESTADOS CHATBOT IA ---
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatEndRef = React.useRef(null);
+
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, isChatOpen]);
+
   useEffect(() => {
     if (isAppReady && !puroInput.tipo && listCatAlimentos.length > 0) {
       setPuroInput(prev => ({ ...prev, tipo: listCatAlimentos[0].nombre }));
@@ -279,6 +292,80 @@ function Porcicontrol({ user, db, appId }) {
   // --- FUNCIONES AUXILIARES ---
   const formatearMoneda = (v) => new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ' }).format(v || 0);
   const getLoteActivo = (corralId) => listLotes.find(l => l.corralId === corralId && l.estado === 'Activo');
+
+  const handleSendChatMessage = async () => {
+    if (!chatInput.trim()) return;
+
+    // Agregar el mensaje del usuario a la vista
+    const userMessage = { role: 'user', content: chatInput };
+    setChatMessages((prev) => [...prev, userMessage]);
+    setChatInput('');
+    setIsChatLoading(true);
+
+    try {
+      // 1. INYECCIÓN DE CONTEXTO EN TIEMPO REAL
+      const contextoGranja = {
+        inventarioCentral: inventarioCentral,
+        corrales: listCorrales,
+        lotesActivos: listLotes.filter(l => l.estado === 'Activo'),
+        alimentosRegistrados: listAlimentos,
+      };
+
+      const systemPrompt = `Eres un experto agrícola y el asistente IA integrado del ERP 'Porcicontrol'.
+Tu objetivo es ayudar al usuario basándote EXACTAMENTE en los datos actuales de la granja.
+Responde de manera amable, concisa y directa.
+REGLAS DE FORMATO: Trata de usar emojis para que sea amigable. Separa bien los párrafos. Usa guiones cortos para las listas.
+
+ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
+${JSON.stringify(contextoGranja)}
+
+Si te preguntan sobre inventario, lotes o corrales, busca la información en este JSON y da una respuesta precisa.`;
+
+      // Formatear el historial para la API de Gemini
+      const geminiHistory = chatMessages.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }]
+      }));
+      geminiHistory.push({
+        role: 'user',
+        parts: [{ text: userMessage.content }]
+      });
+
+      // 2. LLAMADA A LA API DE GEMINI
+      const API_KEY = "AIzaSyDyXIsSd3yWHWGecCbRuLyKrkyc2DCxpFA";
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          contents: geminiHistory
+        })
+      });
+
+      const data = await response.json();
+
+      // 3. GUARDAR RESPUESTA DEL BOT
+      if (data.candidates && data.candidates.length > 0) {
+        const botResponse = data.candidates[0].content.parts[0].text;
+        setChatMessages((prev) => [...prev, { role: 'assistant', content: botResponse }]);
+      } else {
+        throw new Error("Respuesta inválida de la API");
+      }
+
+    } catch (error) {
+      console.error("Error en chatbot:", error);
+      setChatMessages((prev) => [...prev, {
+        role: 'assistant',
+        content: 'Lo siento, hubo un error al conectar con la IA. Verifica tu conexión o la API Key.'
+      }]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
 
   // Función async para guardar peso(puedes ver la estructura en la imagen)
   const guardarPesoEnNube = async (pesoLb, fecha, metodo) => {
@@ -3177,6 +3264,83 @@ function Porcicontrol({ user, db, appId }) {
           {vista === 'imprimirFicha' && renderFichaCorral()}
           {vista === 'reporteHistorial' && renderReporteHistorial()}
         </div>
+
+        {/* CHATBOT FLOTANTE IA */}
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
+          {/* Ventana del Chat */}
+          {isChatOpen && (
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-80 sm:w-96 h-[500px] max-h-[75vh] mb-4 flex flex-col overflow-hidden animate-in slide-in-from-bottom-5">
+              {/* Header */}
+              <div className="bg-emerald-600 p-4 flex justify-between items-center text-white shrink-0">
+                <div className="flex items-center gap-2">
+                  <Activity size={20} className="animate-pulse" />
+                  <span className="font-bold">Asistente de Granja</span>
+                </div>
+                <button onClick={() => setIsChatOpen(false)} className="hover:bg-emerald-700 p-1 rounded-full transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* Mensajes */}
+              <div className="flex-1 p-4 overflow-y-auto bg-slate-50 flex flex-col gap-3">
+                {chatMessages.length === 0 ? (
+                  <div className="text-center text-slate-500 text-sm mt-10">
+                    <Activity size={32} className="mx-auto text-emerald-300 mb-2" />
+                    <p>¡Hola! Conozco todo tu inventario y lotes actuales. ¿Qué deseas saber?</p>
+                  </div>
+                ) : (
+                  chatMessages.map((msg, idx) => (
+                    <div key={idx} className={`p-3 rounded-xl max-w-[85%] text-sm whitespace-pre-wrap leading-relaxed ${msg.role === 'user' ? 'bg-emerald-600 text-white self-end rounded-tr-none shadow-md' : 'bg-white border border-slate-200 text-slate-700 self-start rounded-tl-none shadow-sm'}`}>
+                      {msg.content.split(/(\*\*.*?\*\*)/g).map((part, i) => 
+                        part.startsWith('**') && part.endsWith('**') 
+                          ? <strong key={i} className={msg.role === 'user' ? 'font-black' : 'font-bold text-emerald-700'}>{part.slice(2, -2)}</strong> 
+                          : part
+                      )}
+                    </div>
+                  ))
+                )}
+                {isChatLoading && (
+                  <div className="bg-white border border-slate-200 text-slate-500 self-start rounded-xl rounded-tl-none shadow-sm p-3 text-sm flex gap-1 items-center">
+                    <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
+                    <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-100"></div>
+                    <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-200"></div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Input */}
+              <div className="p-3 border-t border-slate-200 bg-white shrink-0">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendChatMessage()}
+                    placeholder="Escribe tu pregunta..."
+                    className="flex-1 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    onClick={handleSendChatMessage}
+                    disabled={isChatLoading || !chatInput.trim()}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white p-2 rounded-xl disabled:opacity-50 transition-colors"
+                  >
+                    <ChevronRight size={20} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Botón Flotante */}
+          <button
+            onClick={() => setIsChatOpen(!isChatOpen)}
+            className={`${isChatOpen ? 'bg-slate-700' : 'bg-emerald-600 hover:bg-emerald-500'} text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 flex items-center justify-center`}
+          >
+            {isChatOpen ? <X size={28} /> : <Activity size={28} />}
+          </button>
+        </div>
+
       </main>
     </div>
   );
