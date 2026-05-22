@@ -306,20 +306,16 @@ function Porcicontrol({ user, db, appId }) {
       // 1. INYECCIÓN DE CONTEXTO EN TIEMPO REAL
       const contextoGranja = {
         inventarioCentral: inventarioCentral,
-        corrales: listCorrales,
-        lotesActivos: listLotes.filter(l => l.estado === 'Activo'),
-        alimentosRegistrados: listAlimentos,
+        listCorrales: listCorrales,
+        listLotes: listLotes,
+        listBajas: listBajas,
+        factorSchaeffer: constanteSchaeffer,
       };
 
-      const systemPrompt = `Eres un experto agrícola y el asistente IA integrado del ERP 'Porcicontrol'.
-Tu objetivo es ayudar al usuario basándote EXACTAMENTE en los datos actuales de la granja.
-Responde de manera amable, concisa y directa.
-REGLAS DE FORMATO: Trata de usar emojis para que sea amigable. Separa bien los párrafos. Usa guiones cortos para las listas.
+      const systemPrompt = `Eres el Ingeniero Agrónomo, Zootecnista y experto financiero virtual integrado en Porcicontrol. Tienes acceso al estado en tiempo real de mi granja en este JSON. Usa estos datos para tener contexto, PERO tienes total libertad de usar tu conocimiento avanzado para darme consejos, diagnosticar posibles problemas de sanidad, sugerir mejoras en la conversión alimenticia (FCA) y darme estrategias de negocio. Eres un asesor proactivo y analítico. Responde en un tono profesional, amigable y fácil de leer.
 
 ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
-${JSON.stringify(contextoGranja)}
-
-Si te preguntan sobre inventario, lotes o corrales, busca la información en este JSON y da una respuesta precisa.`;
+\${JSON.stringify(contextoGranja)}`;
 
       // Formatear el historial para la API de Gemini
       const geminiHistory = chatMessages.map(msg => ({
@@ -3144,6 +3140,228 @@ Si te preguntan sobre inventario, lotes o corrales, busca la información en est
     );
   };
 
+  // =========================================================================
+  // MÓDULO: FINANZAS GLOBALES — Rentabilidad histórica de toda la granja
+  // =========================================================================
+  const renderFinanzasGlobales = () => {
+    // 1. AGREGACIÓN FINANCIERA HISTÓRICA (todos los lotes: Activos y Cerrados)
+    const resumenPorLote = listLotes.map(lote => {
+      const alimentosLote = listAlimentos.filter(a => a.loteId === lote.id);
+      const vacunasLote = listVacunas.filter(v => v.loteId === lote.id);
+      const gastosLote = listGastosExtra.filter(g => g.loteId === lote.id);
+      const ventasLote = listVentas.filter(v => v.loteId === lote.id);
+      const bajasLote = listBajas.filter(b => b.loteId === lote.id);
+
+      const costoLechones = (lote.cantidad || 0) * (lote.costoLechon || 0);
+      const costoAlimento = alimentosLote.reduce((s, a) => s + (a.costo || 0), 0);
+      const costoMedicinas = vacunasLote.reduce((s, v) => s + (v.costo || 0), 0);
+      const costoGastos = gastosLote.reduce((s, g) => s + (g.monto || 0), 0);
+      const costoManoObra = lote.manoObra || 0;
+      const inversionTotal = costoLechones + costoAlimento + costoMedicinas + costoGastos + costoManoObra;
+
+      const ingresosBrutos = ventasLote.reduce((s, v) => s + (v.totalVenta || 0), 0);
+      const utilidadNeta = ingresosBrutos - inversionTotal;
+
+      const lbsCarneVendida = ventasLote.reduce((s, v) => {
+        const lbsPorCerdo = v.pesosVenta
+          ? v.pesosVenta.reduce((a, p) => a + (p.peso || 0), 0)
+          : (v.pesoPromedioLibras || 0) * (v.cantidadCerdos || 0);
+        return s + lbsPorCerdo;
+      }, 0);
+      const costoPorLibra = lbsCarneVendida > 0 ? inversionTotal / lbsCarneVendida : 0;
+      const cerdosVendidos = ventasLote.reduce((s, v) => s + (v.cantidadCerdos || 0), 0);
+      const bajasTotales = bajasLote.reduce((s, b) => s + (b.cantidad || 0), 0);
+
+      return {
+        id: lote.id,
+        nombre: listCorrales.find(c => c.id === lote.corralId)?.nombre || `Lote ${lote.id}`,
+        estado: lote.estado || 'Activo',
+        fechaIngreso: lote.fechaIngreso || '—',
+        cantidadInicial: lote.cantidad || 0,
+        costoLechones, costoAlimento, costoMedicinas, costoGastos, costoManoObra,
+        inversionTotal, ingresosBrutos, utilidadNeta,
+        lbsCarneVendida, costoPorLibra, cerdosVendidos, bajasTotales,
+      };
+    });
+
+    // 2. TOTALES GLOBALES
+    const totGlobal = resumenPorLote.reduce((acc, r) => ({
+      inversionTotal: acc.inversionTotal + r.inversionTotal,
+      ingresosBrutos: acc.ingresosBrutos + r.ingresosBrutos,
+      utilidadNeta: acc.utilidadNeta + r.utilidadNeta,
+      lbsCarneVendida: acc.lbsCarneVendida + r.lbsCarneVendida,
+      costoLechones: acc.costoLechones + r.costoLechones,
+      costoAlimento: acc.costoAlimento + r.costoAlimento,
+      costoMedicinas: acc.costoMedicinas + r.costoMedicinas,
+      costoGastos: acc.costoGastos + r.costoGastos,
+      costoManoObra: acc.costoManoObra + r.costoManoObra,
+    }), {
+      inversionTotal: 0, ingresosBrutos: 0, utilidadNeta: 0, lbsCarneVendida: 0,
+      costoLechones: 0, costoAlimento: 0, costoMedicinas: 0, costoGastos: 0, costoManoObra: 0,
+    });
+
+    const costoPorLibraGlobal = totGlobal.lbsCarneVendida > 0
+      ? totGlobal.inversionTotal / totGlobal.lbsCarneVendida : 0;
+    const margenGlobal = totGlobal.ingresosBrutos > 0
+      ? ((totGlobal.utilidadNeta / totGlobal.ingresosBrutos) * 100) : 0;
+
+    // 3. ESTRUCTURA DE COSTOS para barras CSS
+    const costItems = [
+      { label: 'Lechones', value: totGlobal.costoLechones, color: 'bg-blue-500' },
+      { label: 'Alimento', value: totGlobal.costoAlimento, color: 'bg-amber-500' },
+      { label: 'Medicinas', value: totGlobal.costoMedicinas, color: 'bg-red-400' },
+      { label: 'Gastos Extra', value: totGlobal.costoGastos, color: 'bg-purple-500' },
+      { label: 'Mano de Obra', value: totGlobal.costoManoObra, color: 'bg-slate-400' },
+    ];
+    const maxCosto = Math.max(...costItems.map(c => c.value), 1);
+    const lotesActivos = resumenPorLote.filter(r => r.estado === 'Activo').length;
+    const lotesCerrados = resumenPorLote.filter(r => r.estado === 'Cerrado').length;
+
+    return (
+      <div className="p-4 md:p-6 space-y-6 max-w-screen-xl mx-auto">
+
+        {/* ENCABEZADO */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-200 pb-4">
+          <div>
+            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+              <DollarSign size={26} className="text-emerald-600" />
+              Finanzas Globales
+            </h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Análisis de rentabilidad histórica — {resumenPorLote.length} lotes ({lotesActivos} activos · {lotesCerrados} cerrados)
+            </p>
+          </div>
+          <div className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+            Datos acumulados hasta hoy
+          </div>
+        </div>
+
+        {/* KPI CARDS */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Inversión Histórica</p>
+            <p className="text-2xl font-black text-slate-800">{formatearMoneda(totGlobal.inversionTotal)}</p>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {costItems.filter(c => c.value > 0).map(c => (
+                <span key={c.label} className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">{c.label}</span>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Ingresos Brutos</p>
+            <p className="text-2xl font-black text-emerald-600">{formatearMoneda(totGlobal.ingresosBrutos)}</p>
+            <p className="text-xs text-slate-500 mt-2">{totGlobal.lbsCarneVendida.toFixed(0)} lbs de carne registradas</p>
+          </div>
+
+          <div className={`border rounded-xl p-4 shadow-sm ${totGlobal.utilidadNeta >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'
+            }`}>
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Utilidad Neta Global</p>
+            <p className={`text-2xl font-black ${totGlobal.utilidadNeta >= 0 ? 'text-emerald-700' : 'text-red-600'
+              }`}>{formatearMoneda(totGlobal.utilidadNeta)}</p>
+            <p className={`text-xs font-bold mt-2 ${totGlobal.utilidadNeta >= 0 ? 'text-emerald-600' : 'text-red-500'
+              }`}>Margen: {margenGlobal.toFixed(1)}%</p>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Costo / Libra Carne</p>
+            <p className="text-2xl font-black text-slate-700">
+              {costoPorLibraGlobal > 0 ? formatearMoneda(costoPorLibraGlobal) : '—'}
+            </p>
+            <p className="text-xs text-slate-500 mt-2">Promedio histórico ponderado</p>
+          </div>
+        </div>
+
+        {/* ESTRUCTURA DE COSTOS — barra horizontal CSS */}
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+          <h3 className="text-sm font-black uppercase tracking-widest text-slate-500 mb-4">Estructura de Costos Acumulada</h3>
+          <div className="space-y-3">
+            {costItems.map(item => {
+              const pct = totGlobal.inversionTotal > 0
+                ? ((item.value / totGlobal.inversionTotal) * 100).toFixed(1) : 0;
+              const barW = maxCosto > 0 ? (item.value / maxCosto) * 100 : 0;
+              return (
+                <div key={item.label} className="grid grid-cols-[110px_1fr_120px] items-center gap-3">
+                  <span className="text-xs font-bold text-slate-600 truncate">{item.label}</span>
+                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full ${item.color} rounded-full transition-all duration-500`} style={{ width: `${barW}%` }} />
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-black text-slate-700">{formatearMoneda(item.value)}</span>
+                    <span className="text-[10px] text-slate-400 ml-1">({pct}%)</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* TABLA DETALLE POR LOTE */}
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Rentabilidad por Lote</h3>
+            <span className="text-xs text-slate-400 font-medium">{resumenPorLote.length} lotes totales</span>
+          </div>
+          {resumenPorLote.length === 0 ? (
+            <div className="py-12 text-center text-slate-400 text-sm font-medium">No hay lotes registrados aún.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left border-collapse">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4 font-bold text-slate-600">Lote</th>
+                    <th className="py-3 px-4 font-bold text-slate-600">Estado</th>
+                    <th className="py-3 px-4 font-bold text-right text-slate-600">Inversión</th>
+                    <th className="py-3 px-4 font-bold text-right text-slate-600">Ingresos</th>
+                    <th className="py-3 px-4 font-bold text-right text-slate-600">Utilidad</th>
+                    <th className="py-3 px-4 font-bold text-right text-slate-600">Q/lb Carne</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {resumenPorLote.map(r => (
+                    <tr key={r.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="py-3 px-4">
+                        <p className="font-bold text-slate-800">{r.nombre}</p>
+                        <p className="text-xs text-slate-400">{r.cantidadInicial} lechones · {r.fechaIngreso}</p>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${r.estado === 'Activo' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
+                          }`}>{r.estado}</span>
+                      </td>
+                      <td className="py-3 px-4 text-right font-bold text-slate-700">{formatearMoneda(r.inversionTotal)}</td>
+                      <td className="py-3 px-4 text-right font-bold text-emerald-600">{formatearMoneda(r.ingresosBrutos)}</td>
+                      <td className={`py-3 px-4 text-right font-bold ${r.utilidadNeta >= 0 ? 'text-emerald-700' : 'text-red-600'
+                        }`}>{formatearMoneda(r.utilidadNeta)}</td>
+                      <td className="py-3 px-4 text-right text-slate-600 font-medium">
+                        {r.costoPorLibra > 0 ? formatearMoneda(r.costoPorLibra) : <span className="text-slate-300">—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="bg-slate-100 border-t-2 border-slate-300">
+                  <tr>
+                    <td colSpan={2} className="py-3 px-4 font-black text-slate-700 uppercase text-xs tracking-widest">TOTALES GLOBALES</td>
+                    <td className="py-3 px-4 text-right font-black text-slate-800">{formatearMoneda(totGlobal.inversionTotal)}</td>
+                    <td className="py-3 px-4 text-right font-black text-emerald-700">{formatearMoneda(totGlobal.ingresosBrutos)}</td>
+                    <td className={`py-3 px-4 text-right font-black ${totGlobal.utilidadNeta >= 0 ? 'text-emerald-700' : 'text-red-600'
+                      }`}>{formatearMoneda(totGlobal.utilidadNeta)}</td>
+                    <td className="py-3 px-4 text-right font-black text-slate-700">
+                      {costoPorLibraGlobal > 0 ? formatearMoneda(costoPorLibraGlobal) : '—'}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+
+      </div>
+    );
+  };
+  // =========================================================================
+  // FIN MÓDULO FINANZAS GLOBALES
+  // =========================================================================
+
   if (!isAppReady) {
     return (
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-900 text-white">
@@ -3202,6 +3420,11 @@ Si te preguntan sobre inventario, lotes o corrales, busca la información en est
               <Archive size={20} className="mr-3" /> Bodega Central
             </button>
 
+            {/* Finanzas Globales */}
+            <button onClick={() => { setVista('finanzasGlobales'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-bold ${vista === 'finanzasGlobales' ? 'bg-emerald-500 text-slate-900 shadow-md' : 'hover:bg-slate-800 hover:text-emerald-400'}`}>
+              <DollarSign size={20} className="mr-3" /> Finanzas Globales
+            </button>
+
             <button onClick={() => { setVista('laboratorio'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-bold ${vista === 'laboratorio' ? 'bg-emerald-500 text-slate-900 shadow-md' : 'hover:bg-slate-800 hover:text-emerald-400'}`}>
               <Beaker size={20} className="mr-3" /> Lab. Mezclas
             </button>
@@ -3248,6 +3471,7 @@ Si te preguntan sobre inventario, lotes o corrales, busca la información en est
               {vista === 'prepararVenta' && <><Receipt size={18} className="mr-2 text-slate-600" /> Báscula de Venta</>}
               {vista === 'resumenVenta' && <><PieChart size={18} className="mr-2 text-slate-600" /> Reportes de Venta</>}
               {vista === 'imprimirFicha' && <><Printer size={18} className="mr-2 text-slate-600" /> Ficha de Trazabilidad</>}
+              {vista === 'finanzasGlobales' && <><DollarSign size={18} className="mr-2 text-emerald-600" /> Finanzas Globales</>}
             </h2>
           </div>
           <div className="text-xs font-black text-slate-400 uppercase tracking-widest">{new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
@@ -3263,6 +3487,7 @@ Si te preguntan sobre inventario, lotes o corrales, busca la información en est
           {vista === 'resumenVenta' && renderResumenVenta()}
           {vista === 'imprimirFicha' && renderFichaCorral()}
           {vista === 'reporteHistorial' && renderReporteHistorial()}
+          {vista === 'finanzasGlobales' && renderFinanzasGlobales()}
         </div>
 
         {/* CHATBOT FLOTANTE IA */}
@@ -3291,9 +3516,9 @@ Si te preguntan sobre inventario, lotes o corrales, busca la información en est
                 ) : (
                   chatMessages.map((msg, idx) => (
                     <div key={idx} className={`p-3 rounded-xl max-w-[85%] text-sm whitespace-pre-wrap leading-relaxed ${msg.role === 'user' ? 'bg-emerald-600 text-white self-end rounded-tr-none shadow-md' : 'bg-white border border-slate-200 text-slate-700 self-start rounded-tl-none shadow-sm'}`}>
-                      {msg.content.split(/(\*\*.*?\*\*)/g).map((part, i) => 
-                        part.startsWith('**') && part.endsWith('**') 
-                          ? <strong key={i} className={msg.role === 'user' ? 'font-black' : 'font-bold text-emerald-700'}>{part.slice(2, -2)}</strong> 
+                      {msg.content.split(/(\*\*.*?\*\*)/g).map((part, i) =>
+                        part.startsWith('**') && part.endsWith('**')
+                          ? <strong key={i} className={msg.role === 'user' ? 'font-black' : 'font-bold text-emerald-700'}>{part.slice(2, -2)}</strong>
                           : part
                       )}
                     </div>
