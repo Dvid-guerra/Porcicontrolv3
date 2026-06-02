@@ -6,6 +6,7 @@ import {
   Archive, Box, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
   CheckSquare, Beaker, ShoppingCart, FileText, Download, LogOut, Menu
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 // (La importación de App.css ha sido omitida para evitar errores de compilación en este entorno. 
 // En tu VS Code local, puedes volver a colocar: import './App.css'; si lo necesitas).
@@ -161,6 +162,7 @@ const safeArr = (val, fallback = []) => Array.isArray(val) ? val : fallback;
 // COMPONENTE PRINCIPAL (INTERFAZ Y LÓGICA DE NEGOCIO)
 // ============================================================================
 function Porcicontrol({ user, db, appId }) {
+  const CLIENT_ID = useMemo(() => "client_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9), []);
   // --- ESTADOS NUBE (MIGRADO DE LOCALSTORAGE) ---
   const [catalogoAlimento, setCatalogoAlimento, l1] = useCloudStorage('agro_catalogo', INITIAL_CATALOGO, user, db, appId);
   const [catalogoIngredientes, setCatalogoIngredientes, l2] = useCloudStorage('agro_catalogo_ingredientes', INITIAL_INGREDIENTES, user, db, appId);
@@ -186,9 +188,10 @@ function Porcicontrol({ user, db, appId }) {
   const [tareasSanidad, setTareasSanidad, l15] = useCloudStorage('agro_tareassanidad', [], user, db, appId);
   const [ventas, setVentas, l16] = useCloudStorage('agro_ventas', [], user, db, appId);
   const [constanteSchaeffer, setConstanteSchaeffer, l17] = useCloudStorage('agro_constante_schaeffer', 400, user, db, appId);
+  const [notificacionesPush, setNotificacionesPush, l18] = useCloudStorage('agro_notificaciones_push', [], user, db, appId);
 
   // PANTALLA DE CARGA MIENTRAS SE CONECTA A FIREBASE
-  const isAppReady = l1 && l2 && l3 && l4 && l5 && l6 && l7 && l8 && l9 && l10 && l11 && l12 && l13 && l14 && l15 && l16 && l17;
+  const isAppReady = l1 && l2 && l3 && l4 && l5 && l6 && l7 && l8 && l9 && l10 && l11 && l12 && l13 && l14 && l15 && l16 && l17 && l18;
 
   // --- VARIABLES BLINDADAS ---
   const listCatAlimentos = safeArr(catalogoAlimento, INITIAL_CATALOGO);
@@ -275,6 +278,41 @@ function Porcicontrol({ user, db, appId }) {
     }
   }, [isAppReady, listCatAlimentos]);
 
+  const emitirNotificacionPush = (mensaje) => {
+    const userName = user?.displayName || user?.email?.split('@')[0] || 'Un usuario';
+    const nueva = { id: `notif_${Date.now()}`, mensaje: `${userName}: ${mensaje}`, clientId: CLIENT_ID, fecha: Date.now() };
+    setNotificacionesPush(prev => {
+      const validas = (prev || []).filter(n => (Date.now() - n.fecha) < 24 * 60 * 60 * 1000);
+      return [...validas.slice(-49), nueva];
+    });
+  };
+
+  const lastSeenNotifId = React.useRef(null);
+  useEffect(() => {
+    if (window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAppReady || !notificacionesPush || notificacionesPush.length === 0) return;
+    
+    const ultima = notificacionesPush[notificacionesPush.length - 1];
+    if (!lastSeenNotifId.current) {
+      lastSeenNotifId.current = ultima.id;
+      return;
+    }
+
+    if (ultima.id !== lastSeenNotifId.current) {
+      lastSeenNotifId.current = ultima.id;
+      if (ultima.clientId !== CLIENT_ID) {
+        if (window.Notification && Notification.permission === 'granted') {
+          new Notification('AgroControl Porcino', { body: ultima.mensaje });
+        }
+      }
+    }
+  }, [notificacionesPush, isAppReady, CLIENT_ID]);
+
   // Cálculo en tiempo real: Fórmula de Schaeffer
   useEffect(() => {
     if (circunferenciaCm && longitudCm) {
@@ -304,20 +342,40 @@ function Porcicontrol({ user, db, appId }) {
 
     try {
       // 1. INYECCIÓN DE CONTEXTO EN TIEMPO REAL
+      const statsLotesActivos = listLotes.filter(l => l.estado === 'Activo').map(lote => {
+        const stats = calcularEstadisticasLote(lote);
+        const corral = listCorrales.find(c => c.id === lote.corralId);
+        return {
+          corral: corral ? corral.nombre : 'Desconocido',
+          cerdosActuales: stats.cantidadActual,
+          mortalidadPorcentaje: stats.mortalidadPorcentaje.toFixed(1) + '%',
+          conversionFCA: stats.fca.toFixed(2),
+          utilidadNetaActual: formatearMoneda(stats.utilidadNeta),
+          diasEnEngorda: stats.diasLote,
+          pesoPromedioActualLb: stats.pesoActual
+        };
+      });
+
+      const inventarioResumen = inventarioCentral.map(i => ({ nombre: i.nombre, stockLbs: i.stockLbs.toFixed(1) }));
+
       const contextoGranja = {
-        inventarioCentral: inventarioCentral,
-        listCorrales: listCorrales,
-        listLotes: listLotes,
-        listBajas: listBajas,
+        inventario: inventarioResumen,
+        corralesActivosStats: statsLotesActivos,
         factorSchaeffer: constanteSchaeffer,
       };
 
-      const systemPrompt = `Eres el Ingeniero Agrónomo, Zootecnista y experto financiero virtual integrado en Porcicontrol. Tienes acceso al estado en tiempo real de mi granja en este JSON. Usa estos datos para tener contexto, PERO tienes total libertad de usar tu conocimiento avanzado para darme consejos, diagnosticar posibles problemas de sanidad, sugerir mejoras en la conversión alimenticia (FCA) y darme estrategias de negocio. Eres un asesor proactivo y analítico. Responde en un tono profesional, amigable y fácil de leer.
+      const systemPrompt = `Eres el Ingeniero Agrónomo, Zootecnista y experto financiero virtual integrado en Porcicontrol. Tienes acceso al estado en tiempo real de mi granja en este JSON. 
+
+REGLAS ESTRICTAS:
+1. Usa formato Markdown SIEMPRE (negritas, listas, emojis).
+2. Si te preguntan sobre el estado de la granja, menciona métricas explícitas como la Conversión Alimenticia (FCA), Utilidad y Mortalidad de los corrales activos usando la información del JSON.
+3. Sé amigable pero muy profesional y analítico. Da consejos accionables basados en el FCA y Mortalidad.
+4. NO inventes datos de los corrales. Separa consejos médicos de financieros.
 
 ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
-\${JSON.stringify(contextoGranja)}`;
+${JSON.stringify(contextoGranja)}`;
 
-      // Formatear el historial para la API de Gemini
+      // Formatear el historial para la API de Geministorial para la API de Gemini
       const geminiHistory = chatMessages.map(msg => ({
         role: msg.role === 'user' ? 'user' : 'model',
         parts: [{ text: msg.content }]
@@ -385,6 +443,7 @@ ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
 
       await new Promise(resolve => setTimeout(resolve, 300));
       setPesos([...listPesos, nuevoPeso]);
+      emitirNotificacionPush(`Nuevo peso registrado: ${parseFloat(pesoLb).toFixed(2)} lb en Lote activo.`);
       mostrarAlerta('Éxito', `Peso registrado: ${parseFloat(pesoLb).toFixed(2)} lb (${metodo})`, 'success');
       setGuardandoPeso(false);
       return true;
@@ -888,6 +947,7 @@ ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
       faseRegistro: faseDestinoSeleccionada
     }]);
     setPuroInput({ ...puroInput, cantidad: '' });
+    emitirNotificacionPush(`Se agregaron ${librasSuministradas} lbs de ${puroInput.tipo} a tolva.`);
     mostrarAlerta("Tolva Llenada", "El concentrado ha sido descontado de la bodega central y el presupuesto avanzó.");
   };
 
@@ -951,6 +1011,7 @@ ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
       categoria: bodegaCategoria
     }]);
     e.target.reset();
+    emitirNotificacionPush(`Compra registrada: ${parseFloat(fd.get('sacos'))} sacos de ${fd.get('tipo')}.`);
     mostrarAlerta("Éxito", "Compra registrada en la Bodega Central.");
   };
 
@@ -1142,6 +1203,13 @@ ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
       return null;
     }).filter(Boolean);
 
+    const notifsPushMapeadas = (notificacionesPush || [])
+      .filter(n => (Date.now() - n.fecha) < 24 * 60 * 60 * 1000)
+      .map(n => ({ corralNombre: 'Actividad', alertaEspecial: true, mensaje: n.mensaje }))
+      .reverse();
+    
+    const alertasFinales = [...notifsPushMapeadas, ...alertasCambio];
+
     return (
       <div className="p-4 md:p-8 max-w-7xl mx-auto animate-in fade-in duration-300">
         <div className="flex justify-between items-center mb-8">
@@ -1184,9 +1252,9 @@ ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
               <span className="text-xs font-bold text-slate-400">ALERTAS</span>
             </div>
             <h3 className="text-slate-500 text-sm font-medium">Notificaciones</h3>
-            {alertasCambio.length > 0 ? (
-              <div className="mt-3 space-y-3 max-h-24 overflow-y-auto pr-2">
-                {alertasCambio.map((alerta, i) => (
+            {alertasFinales.length > 0 ? (
+              <div className="mt-3 space-y-3 max-h-32 overflow-y-auto pr-2 scrollbar-thin">
+                {alertasFinales.map((alerta, i) => (
                   <div key={i} className={`text-sm border-l-2 pl-2 leading-tight ${alerta.alertaEspecial ? 'border-emerald-500 text-emerald-700 font-bold bg-emerald-50 p-2 rounded-r' : 'border-amber-400'}`}>
                     {alerta.alertaEspecial ? (
                       <span>{alerta.corralNombre}: {alerta.mensaje}</span>
@@ -3515,11 +3583,24 @@ ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
                   </div>
                 ) : (
                   chatMessages.map((msg, idx) => (
-                    <div key={idx} className={`p-3 rounded-xl max-w-[85%] text-sm whitespace-pre-wrap leading-relaxed ${msg.role === 'user' ? 'bg-emerald-600 text-white self-end rounded-tr-none shadow-md' : 'bg-white border border-slate-200 text-slate-700 self-start rounded-tl-none shadow-sm'}`}>
-                      {msg.content.split(/(\*\*.*?\*\*)/g).map((part, i) =>
-                        part.startsWith('**') && part.endsWith('**')
-                          ? <strong key={i} className={msg.role === 'user' ? 'font-black' : 'font-bold text-emerald-700'}>{part.slice(2, -2)}</strong>
-                          : part
+                    <div key={idx} className={`p-3 rounded-xl max-w-[85%] shrink-0 text-sm leading-relaxed ${msg.role === 'user' ? 'bg-emerald-600 text-white self-end rounded-tr-none shadow-md' : 'bg-white border border-slate-200 text-slate-700 self-start rounded-tl-none shadow-sm'}`}>
+                      {msg.role === 'user' ? (
+                        <div className="whitespace-pre-wrap">{msg.content}</div>
+                      ) : (
+                        <ReactMarkdown 
+                          components={{
+                            strong: ({node, ...props}) => <strong className="font-bold text-emerald-800" {...props} />,
+                            ul: ({node, ...props}) => <ul className="list-disc pl-4 my-2" {...props} />,
+                            ol: ({node, ...props}) => <ol className="list-decimal pl-4 my-2" {...props} />,
+                            li: ({node, ...props}) => <li className="mb-1" {...props} />,
+                            h1: ({node, ...props}) => <h1 className="text-xl font-bold my-2" {...props} />,
+                            h2: ({node, ...props}) => <h2 className="text-lg font-bold my-2" {...props} />,
+                            h3: ({node, ...props}) => <h3 className="text-md font-bold my-1" {...props} />,
+                            p: ({node, ...props}) => <p className="mb-2" {...props} />
+                          }}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
                       )}
                     </div>
                   ))
