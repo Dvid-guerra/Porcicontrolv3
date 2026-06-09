@@ -347,16 +347,42 @@ function Porcicontrol({ user, db, appId }) {
         const corral = listCorrales.find(c => c.id === lote.corralId);
         return {
           corral: corral ? corral.nombre : 'Desconocido',
+          loteId: lote.id,
+          cantidadInicial: lote.cantidad || 0,
           cerdosActuales: stats.cantidadActual,
           mortalidadPorcentaje: stats.mortalidadPorcentaje.toFixed(1) + '%',
           conversionFCA: stats.fca.toFixed(2),
-          utilidadNetaActual: formatearMoneda(stats.utilidadNeta),
           diasEnEngorda: stats.diasLote,
-          pesoPromedioActualLb: stats.pesoActual
+          pesoInicialPromedioLb: stats.pesoInicial,
+          pesoPromedioActualLb: stats.pesoActual,
+          
+          // Desglose financiero detallado
+          costoLechones: stats.costoLechones,
+          costoAlimento: stats.costoAlimento,
+          costoSanidad: stats.totalSanidad,
+          costoGastosExtras: stats.totalGastosExtras,
+          costoManoObra: lote.manoObra || 0,
+          costoTotalAcumulado: stats.costoInvertidoTotal + (lote.manoObra || 0),
+          precioVentaLibraEst: lote.precioVentaLibra || 0,
+          ingresoEstimado: stats.ingresoEstimado,
+          utilidadNetaActual: stats.utilidadNeta,
+          proyeccionUtilidadFinal: stats.proyeccionUtilidadFinal,
+          
+          // Proyecciones físicas y costos proyectados
+          pesoObjetivoLb: stats.pesoObjetivoLb,
+          librasFaltantes: stats.proyeccionLibrasFaltantes,
+          alimentoFaltanteLb: stats.proyeccionAlimentoFaltante,
+          costoFaltanteEst: stats.proyeccionCostoFaltante,
         };
       });
 
-      const inventarioResumen = inventarioCentral.map(i => ({ nombre: i.nombre, stockLbs: i.stockLbs.toFixed(1) }));
+      const inventarioResumen = inventarioCentral.map(i => ({
+        nombre: i.nombre,
+        stockLbs: parseFloat(i.stockLbs.toFixed(1)),
+        precioSaco: i.precioSaco,
+        librasPorSaco: i.librasPorSaco,
+        precioPorLibra: i.precioSaco / (i.librasPorSaco || 1)
+      }));
 
       const contextoGranja = {
         inventario: inventarioResumen,
@@ -369,8 +395,9 @@ function Porcicontrol({ user, db, appId }) {
 REGLAS ESTRICTAS:
 1. Usa formato Markdown SIEMPRE (negritas, listas, emojis).
 2. Si te preguntan sobre el estado de la granja, menciona métricas explícitas como la Conversión Alimenticia (FCA), Utilidad y Mortalidad de los corrales activos usando la información del JSON.
-3. Sé amigable pero muy profesional y analítico. Da consejos accionables basados en el FCA y Mortalidad.
-4. NO inventes datos de los corrales. Separa consejos médicos de financieros.
+3. Puedes realizar cálculos financieros precisos (como el punto de equilibrio o "breakeven" por libra, costo total acumulado por cerdo, proyecciones de rentabilidad, etc.) ya que cuentas con los desgloses de costos acumulados y precios estimados de venta.
+4. Sé amigable pero muy profesional y analítico. Da consejos accionables basados en el FCA y Mortalidad.
+5. NO inventes datos de los corrales. Separa consejos médicos de financieros.
 
 ESTADO ACTUAL DE LA GRANJA (JSON en tiempo real):
 ${JSON.stringify(contextoGranja)}`;
