@@ -14,9 +14,14 @@ dist-ssr
 .env
 .env.*
 !.env.example
+!.env.production
 .firebase/
 functions/node_modules/
 instalador-final/
+refactor.cjs
+refactor.js
+test_gemini.js
+src/App.css
 
 # Editor directories and files
 .vscode/*
