@@ -1,0 +1,42 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function membership(appId) {
+      return get(/databases/$(database)/documents/artifacts/$(appId)/members/$(request.auth.uid));
+    }
+
+    function isMember(appId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/artifacts/$(appId)/members/$(request.auth.uid))
+        && membership(appId).data.active == true
+        && membership(appId).data.role in ['admin', 'operator', 'viewer'];
+    }
+
+    function canWrite(appId) {
+      return isMember(appId) && membership(appId).data.role in ['admin', 'operator'];
+    }
+
+    function isAdmin(appId) {
+      return isMember(appId) && membership(appId).data.role == 'admin';
+    }
+
+    match /artifacts/{appId}/public/data/granja_compartida/{key} {
+      allow read: if isMember(appId);
+      allow create, update, delete: if canWrite(appId);
+    }
+
+    match /artifacts/{appId}/members/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin(appId));
+      allow write: if isAdmin(appId);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
