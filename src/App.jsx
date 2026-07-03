@@ -1054,7 +1054,15 @@ ${JSON.stringify(contextoGranja)}`;
     const element = document.getElementById(elementoId);
     if (!element) return;
     mostrarAlerta("Generando PDF", "El documento se está procesando. Por favor, espera...");
-    const opt = { margin: 0.4, filename: nombreArchivo, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' } };
+    const opt = elementoId === 'ficha-pdf'
+      ? {
+        margin: 0,
+        filename: nombreArchivo,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+      }
+      : { margin: 0.4, filename: nombreArchivo, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' } };
     try {
       const { default: html2pdf } = await import('html2pdf.js');
       await html2pdf().set(opt).from(element).save();
@@ -4107,55 +4115,181 @@ return (
     const fechaIngresoFormateada = new Date(loteActivo.fechaIngreso + 'T00:00:00').toLocaleDateString('es-GT', { year: 'numeric', month: 'long', day: 'numeric' });
     const fInicioStr = faseActual ? addDaysToDate(loteActivo.fechaIngreso, faseActual.diaInicio - 1) : '-';
     const fFinStr = faseActual ? addDaysToDate(loteActivo.fechaIngreso, faseActual.diaFin - 1) : '-';
+    const tareasLote = listTareasSanidad
+      .filter(t => t.loteId === loteActivo.id)
+      .map(t => ({
+        ...t,
+        fechaObjetivo: t.fechaObjetivo || (loteActivo.fechaIngreso ? addDaysToIsoDate(loteActivo.fechaIngreso, Number(t.dia) || 0) : '')
+      }))
+      .sort((a, b) => String(a.fechaObjetivo || '').localeCompare(String(b.fechaObjetivo || '')));
+    const proximasTareas = tareasLote
+      .filter(t => t.estado !== 'hecho')
+      .slice(0, 6);
+    const tratamientosLote = [
+      ...listVacunas
+        .filter(v => v.loteId === loteActivo.id)
+        .map(v => ({ id: v.id, fecha: v.fecha, nombre: v.nombre || v.vacuna || v.tipo || 'Tratamiento', detalle: '', costo: Number(v.costo) || 0 })),
+      ...listUsosMedicos
+        .filter(u => u.loteId === loteActivo.id)
+        .map(u => ({ id: u.id, fecha: u.fecha, nombre: u.nombre || 'Medicamento', detalle: `${u.cantidad || ''} ${u.unidad || ''}`.trim(), costo: Number(u.costo) || 0 }))
+    ].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    const bajasLote = listBajas
+      .filter(b => b.loteId === loteActivo.id)
+      .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    const ultimaIntervencion = tratamientosLote[0];
+    const estadoSanitario = st.mortalidadPorcentaje > 5 || tareasLote.some(t => t.estado === 'pendiente' && t.fechaObjetivo && t.fechaObjetivo < new Date().toISOString().split('T')[0])
+      ? 'Atención'
+      : 'Normal';
+    const checklistSanitario = ['Diarrea', 'Tos', 'Falta de apetito', 'Retrasados', 'Cojera', 'Amontonamiento por frío/calor', 'Bebedero sin agua'];
 
     return (
       <div className="bg-slate-100 min-h-screen p-4 lg:p-8 flex justify-center animate-in fade-in">
-        <div className="bg-white max-w-3xl w-full rounded-3xl shadow-xl border border-slate-200/50 overflow-hidden">
+        <div className="bg-white max-w-[8.5in] w-full rounded-3xl shadow-xl border border-slate-200/50 overflow-x-auto overflow-y-hidden">
           <div className="bg-slate-900 p-4 flex justify-between items-center text-xs">
             <button onClick={() => setVista('corralDetail')} className="text-slate-300 hover:text-white font-bold flex items-center gap-1.5 transition-colors"><ChevronRight size={18} className="rotate-180" /> Volver al Corral</button>
             <button onClick={() => descargarPDF('ficha-pdf', `Ficha_${corralSeleccionado.nombre}.pdf`)} className="bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-black py-2 px-5 rounded-xl flex items-center shadow-lg shadow-emerald-500/20 transition-all gap-1.5"><Printer size={16} /> Descargar PDF</button>
           </div>
 
-          <div id="ficha-pdf" className="p-10 w-full bg-white text-black border-[12px] border-slate-900 font-sans">
-            <div className="text-center border-b-4 border-slate-900 pb-6 mb-8">
-              <h1 className="text-[52px] font-black text-slate-900 tracking-tighter uppercase leading-none">{corralSeleccionado.nombre}</h1>
-              <p className="text-xl font-black text-slate-500 mt-2 uppercase tracking-widest">Porcicontrol</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-6 mb-8 text-xs font-semibold">
-              <div className="bg-slate-50 p-6 rounded-2xl border border-slate-350 text-center">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 leading-none">Cabezas Activas</p>
-                <p className="text-4xl font-black text-slate-900 leading-none">{st.cantidadActual} <span className="text-sm font-bold text-slate-500">cerdos</span></p>
+          <div id="ficha-pdf" className="bg-white text-black font-sans">
+            <section className="w-[8.5in] h-[11in] box-border border-[10px] border-slate-900 p-[0.36in] overflow-hidden">
+              <div className="text-center border-b-4 border-slate-900 pb-6 mb-8">
+                <h1 className="text-[52px] font-black text-slate-900 tracking-tighter uppercase leading-none">{corralSeleccionado.nombre}</h1>
+                <p className="text-xl font-black text-slate-500 mt-2 uppercase tracking-widest">Porcicontrol</p>
               </div>
-              <div className="bg-slate-50 p-6 rounded-2xl border border-slate-350 text-center">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 leading-none">Días de Engorde</p>
-                <p className="text-4xl font-black text-slate-900 leading-none">{st.diasLote} <span className="text-sm font-bold text-slate-500">días</span></p>
-              </div>
-            </div>
 
-            <div className="bg-indigo-50 border-2 border-indigo-900 p-6 rounded-2xl mb-8 text-center text-xs">
-              <p className="text-[10px] font-black text-indigo-800 uppercase tracking-widest mb-2 leading-none">Alimentación Programada ({etapaActual})</p>
-              <p className="text-3xl font-black text-indigo-950">{alimentoActual}</p>
-              {faseActual && <p className="text-[9px] font-black text-indigo-700 uppercase tracking-widest border-t border-indigo-200/50 pt-2 mt-3 inline-block">Periodo sugerido: {fInicioStr} al {fFinStr}</p>}
-            </div>
-
-            <div className="grid grid-cols-2 gap-6 mb-8 text-center text-xs font-semibold">
-              <div>
-                <p className="text-[10px] font-black text-slate-400 uppercase border-b border-slate-200 pb-1.5 mb-2 leading-none">Fecha de Ingreso</p>
-                <p className="text-lg font-bold text-slate-800 leading-tight">{fechaIngresoFormateada}</p>
+              <div className="grid grid-cols-2 gap-6 mb-8 text-xs font-semibold">
+                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-350 text-center">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 leading-none">Cabezas Activas</p>
+                  <p className="text-4xl font-black text-slate-900 leading-none">{st.cantidadActual} <span className="text-sm font-bold text-slate-500">cerdos</span></p>
+                </div>
+                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-350 text-center">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 leading-none">Días de Engorde</p>
+                  <p className="text-4xl font-black text-slate-900 leading-none">{st.diasLote} <span className="text-sm font-bold text-slate-500">días</span></p>
+                </div>
               </div>
-              <div>
-                <p className="text-[10px] font-black text-slate-400 uppercase border-b border-slate-200 pb-1.5 mb-2 leading-none">Último Peso Registrado</p>
-                <p className="text-lg font-bold text-slate-800 leading-tight">{st.pesoActual > 0 ? `${st.pesoActual} lbs promedio` : 'Sin pesaje registrado'}</p>
-              </div>
-            </div>
 
-            <div className="border-t-2 border-slate-900 pt-6 mt-8">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Anotaciones Veterinarias / Incidencias Sanitarias (Control Manual)</p>
-              <div className="border-b border-dashed border-slate-400 mb-6 h-7"></div>
-              <div className="border-b border-dashed border-slate-400 mb-6 h-7"></div>
-              <div className="border-b border-dashed border-slate-400 mb-6 h-7"></div>
-            </div>
+              <div className="bg-indigo-50 border-2 border-indigo-900 p-6 rounded-2xl mb-8 text-center text-xs">
+                <p className="text-[10px] font-black text-indigo-800 uppercase tracking-widest mb-2 leading-none">Alimentación Programada ({etapaActual})</p>
+                <p className="text-3xl font-black text-indigo-950">{alimentoActual}</p>
+                {faseActual && <p className="text-[9px] font-black text-indigo-700 uppercase tracking-widest border-t border-indigo-200/50 pt-2 mt-3 inline-block">Periodo sugerido: {fInicioStr} al {fFinStr}</p>}
+              </div>
+
+              <div className="grid grid-cols-2 gap-6 mb-8 text-center text-xs font-semibold">
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase border-b border-slate-200 pb-1.5 mb-2 leading-none">Fecha de Ingreso</p>
+                  <p className="text-lg font-bold text-slate-800 leading-tight">{fechaIngresoFormateada}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase border-b border-slate-200 pb-1.5 mb-2 leading-none">Último Peso Registrado</p>
+                  <p className="text-lg font-bold text-slate-800 leading-tight">{st.pesoActual > 0 ? `${st.pesoActual} lbs promedio` : 'Sin pesaje registrado'}</p>
+                </div>
+              </div>
+
+              <div className="border-t-2 border-slate-900 pt-6 mt-8">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Anotaciones de alimentación / manejo (Control Manual)</p>
+                <div className="border-b border-dashed border-slate-400 mb-6 h-7"></div>
+                <div className="border-b border-dashed border-slate-400 mb-6 h-7"></div>
+                <div className="border-b border-dashed border-slate-400 mb-6 h-7"></div>
+              </div>
+            </section>
+
+            <section className="w-[8.5in] h-[11in] box-border border-[10px] border-slate-900 p-[0.32in] overflow-hidden">
+              <div className="border-b-4 border-rose-900 pb-4 mb-4 flex justify-between items-end">
+                <div>
+                  <h2 className="text-2xl font-black text-slate-900 tracking-tight leading-none uppercase">Control Sanitario del Corral</h2>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">{corralSeleccionado.nombre} · {etapaActual} · {alimentoActual}</p>
+                </div>
+                <div className="text-right">
+                  <p className={`text-xl font-black uppercase leading-none ${estadoSanitario === 'Normal' ? 'text-emerald-700' : 'text-rose-700'}`}>{estadoSanitario}</p>
+                  <p className="text-[10px] font-bold text-slate-400 mt-1">Estado sanitario</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 gap-3 mb-4 text-center text-xs">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Tratamientos</p>
+                  <p className="text-2xl font-black text-slate-900">{tratamientosLote.length}</p>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Bajas</p>
+                  <p className="text-2xl font-black text-rose-700">{listBajas.filter(b => b.loteId === loteActivo.id).reduce((sum, b) => sum + (Number(b.cantidad) || 0), 0)}</p>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Mortalidad</p>
+                  <p className="text-2xl font-black text-slate-900">{st.mortalidadPorcentaje.toFixed(1)}%</p>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Última intervención</p>
+                  <p className="text-sm font-black text-slate-900 leading-tight mt-1">{ultimaIntervencion?.fecha || 'Sin registro'}</p>
+                </div>
+              </div>
+
+              <div className="mb-4">
+                <h3 className="text-xs font-black text-slate-900 border-b-2 border-slate-900 pb-2 mb-2 uppercase">Próximas acciones sanitarias</h3>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead className="bg-slate-100 text-slate-600 uppercase tracking-wider">
+                    <tr><th className="p-2">Fecha</th><th className="p-2">Acción</th><th className="p-2">Producto</th><th className="p-2">Estado</th></tr>
+                  </thead>
+                  <tbody>
+                    {proximasTareas.map(t => (
+                      <tr key={t.id} className="border-b border-slate-100">
+                        <td className="p-2 font-bold">{t.fechaObjetivo || '-'}</td>
+                        <td className="p-2">{t.tarea}</td>
+                        <td className="p-2">{t.producto || '-'}</td>
+                        <td className="p-2 font-black uppercase">{t.estado || 'pendiente'}</td>
+                      </tr>
+                    ))}
+                    {proximasTareas.length === 0 && <tr><td colSpan="4" className="p-4 text-center text-slate-400 font-semibold">Sin acciones sanitarias pendientes registradas.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <h3 className="text-xs font-black text-slate-900 border-b-2 border-slate-900 pb-2 mb-2 uppercase">Tratamientos aplicados</h3>
+                  <div className="space-y-2 text-[10px]">
+                    {tratamientosLote.slice(0, 3).map(t => (
+                      <div key={`${t.id}-${t.nombre}`} className="border border-slate-200 rounded-lg p-2">
+                        <p className="font-black text-slate-900">{t.fecha || '-'} · {t.nombre}</p>
+                        <p className="text-slate-500">{[t.detalle, t.costo ? formatearMoneda(t.costo) : ''].filter(Boolean).join(' · ') || 'Sin detalle adicional'}</p>
+                      </div>
+                    ))}
+                    {tratamientosLote.length === 0 && <p className="text-slate-400 font-semibold italic">Sin tratamientos registrados.</p>}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-xs font-black text-slate-900 border-b-2 border-slate-900 pb-2 mb-2 uppercase">Bajas e incidencias</h3>
+                  <div className="space-y-2 text-[10px]">
+                    {bajasLote.slice(0, 3).map(b => (
+                      <div key={b.id} className="border border-rose-100 bg-rose-50/40 rounded-lg p-2">
+                        <p className="font-black text-rose-800">{b.fecha || '-'} · {b.cantidad} baja{Number(b.cantidad) === 1 ? '' : 's'}</p>
+                        <p className="text-slate-600">{b.causa || 'Sin causa registrada'}</p>
+                      </div>
+                    ))}
+                    {bajasLote.length === 0 && <p className="text-slate-400 font-semibold italic">Sin bajas registradas.</p>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t-2 border-slate-900 pt-4">
+                <h3 className="text-xs font-black text-slate-900 mb-2 uppercase">Señales a vigilar en este corral</h3>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-[11px] font-bold mb-4">
+                  {checklistSanitario.map(item => (
+                    <div key={item} className="flex items-center gap-2">
+                      <span className="inline-block w-4 h-4 border-2 border-slate-900"></span>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Notas del encargado / firma</p>
+                <div className="border-b border-dashed border-slate-400 mb-4 h-6"></div>
+                <div className="border-b border-dashed border-slate-400 mb-4 h-6"></div>
+                <div className="grid grid-cols-2 gap-8 mt-6 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  <div><div className="border-b border-slate-500 mb-1"></div>Fecha</div>
+                  <div><div className="border-b border-slate-500 mb-1"></div>Firma</div>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
       </div>
@@ -6053,4 +6187,3 @@ function App() {
 }
 
 export default App;
-
