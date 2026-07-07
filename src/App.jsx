@@ -1062,7 +1062,16 @@ ${JSON.stringify(contextoGranja)}`;
         html2canvas: { scale: 2, useCORS: true },
         jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
       }
-      : { margin: 0.4, filename: nombreArchivo, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' } };
+      : elementoId === 'reporte-financiero-global-pdf'
+        ? {
+          margin: [0.35, 0.35, 0.35, 0.35],
+          filename: nombreArchivo,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', letterRendering: true },
+          jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
+          pagebreak: { mode: ['css', 'legacy'], before: '.pdf-page-break-before', avoid: ['.pdf-avoid-break', 'tr', 'thead'] }
+        }
+        : { margin: 0.4, filename: nombreArchivo, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' } };
     try {
       const { default: html2pdf } = await import('html2pdf.js');
       await html2pdf().set(opt).from(element).save();
@@ -5479,6 +5488,19 @@ return (
     const maxCosto = Math.max(...costItems.map(c => c.value), 1);
     const lotesActivos = resumenPorLote.filter(r => r.estado === 'Activo').length;
     const lotesCerrados = resumenPorLote.filter(r => r.estado === 'Cerrado').length;
+    const fechaReporteFinanciero = new Date().toLocaleDateString('es-GT', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    const formatearFechaReporte = (fecha) => {
+      if (!fecha || fecha === '—') return '—';
+      const date = new Date(`${fecha}T00:00:00`);
+      if (Number.isNaN(date.getTime())) return fecha;
+      return date.toLocaleDateString('es-GT', { day: '2-digit', month: 'short', year: 'numeric' });
+    };
 
     return (
       <div className="p-4 sm:p-6 lg:p-8 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-500">
@@ -5492,8 +5514,16 @@ return (
               Análisis de rentabilidad histórica — ${resumenPorLote.length} lotes (${lotesActivos} activos · ${lotesCerrados} cerrados)
             </p>
           </div>
-          <div className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 shrink-0 self-start md:self-auto">
-            Datos consolidados
+          <div className="flex flex-col sm:flex-row gap-2 shrink-0 self-start md:self-auto">
+            <button
+              onClick={() => descargarPDF('reporte-financiero-global-pdf', `Reporte_Financiero_Global_${new Date().toISOString().split('T')[0]}.pdf`)}
+              className="bg-slate-950 hover:bg-slate-900 text-white font-black py-2.5 px-4 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+            >
+              <Printer size={16} /> Imprimir reporte completo
+            </button>
+            <div className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 flex items-center justify-center">
+              Datos consolidados
+            </div>
           </div>
         </div>
 
@@ -5733,6 +5763,254 @@ return (
               </table>
             </div>
           )}
+        </div>
+
+        <div className="fixed left-[-9999px] top-0 w-[7.8in] bg-white text-slate-900 pointer-events-none">
+          <section
+            id="reporte-financiero-global-pdf"
+            className="bg-white text-slate-900 font-sans"
+            style={{ width: '7.8in' }}
+          >
+            <style>{`
+              #reporte-financiero-global-pdf {
+                font-family: Inter, Arial, sans-serif;
+                color: #0f172a;
+                background: #ffffff;
+              }
+              #reporte-financiero-global-pdf .pdf-sheet {
+                width: 7.8in;
+                padding: 0 0 0.18in 0;
+                background: #ffffff;
+                box-sizing: border-box;
+              }
+              #reporte-financiero-global-pdf .pdf-page-break-before {
+                page-break-before: always;
+                break-before: page;
+              }
+              #reporte-financiero-global-pdf .pdf-avoid-break,
+              #reporte-financiero-global-pdf tr {
+                page-break-inside: avoid;
+                break-inside: avoid;
+              }
+              #reporte-financiero-global-pdf table {
+                border-collapse: collapse;
+                width: 100%;
+              }
+              #reporte-financiero-global-pdf thead {
+                display: table-header-group;
+              }
+              #reporte-financiero-global-pdf tfoot {
+                display: table-row-group;
+              }
+              #reporte-financiero-global-pdf th,
+              #reporte-financiero-global-pdf td {
+                vertical-align: top;
+              }
+            `}</style>
+
+            <div className="pdf-sheet">
+              <header className="border-b-4 border-emerald-600 pb-5 mb-5 flex items-start justify-between">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700 mb-2">AgroControl Porcino</p>
+                  <h1 className="text-3xl font-black tracking-tight text-slate-950 leading-none">Reporte Financiero Global</h1>
+                  <p className="text-xs text-slate-500 font-semibold mt-2">Generado el {fechaReporteFinanciero}</p>
+                </div>
+                <div className="text-right border border-slate-200 rounded-lg p-3 min-w-[1.55in]">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Lotes analizados</p>
+                  <p className="text-3xl font-black text-slate-900 leading-none mt-1">{resumenPorLote.length}</p>
+                  <p className="text-[10px] font-bold text-slate-500 mt-1">{lotesActivos} activos · {lotesCerrados} cerrados</p>
+                </div>
+              </header>
+
+              <div className="grid grid-cols-2 gap-3 mb-5">
+                {[
+                  ['Inversión histórica', formatearMoneda(totGlobal.inversionTotal), 'Capital acumulado en lechones, alimento, sanidad, gastos y mano de obra', 'text-slate-900'],
+                  ['Ingresos brutos', formatearMoneda(totGlobal.ingresosBrutos), `${totGlobal.lbsCarneVendida.toFixed(0)} lb vendidas registradas`, 'text-emerald-700'],
+                  ['Utilidad realizada', formatearMoneda(totGlobal.utilidadRealVentas), `Margen realizado ${margenGlobal.toFixed(1)}%`, totGlobal.utilidadRealVentas >= 0 ? 'text-emerald-700' : 'text-rose-700'],
+                  ['Utilidad estimada', formatearMoneda(totGlobal.utilidadNeta), `Incluye ${formatearMoneda(totGlobal.valorEstimadoVivos)} de inventario vivo`, totGlobal.utilidadNeta >= 0 ? 'text-indigo-700' : 'text-rose-700'],
+                ].map(([label, value, note, color]) => (
+                  <div key={label} className="pdf-card border border-slate-200 rounded-lg p-4 bg-slate-50/60">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">{label}</p>
+                    <p className={`text-2xl font-black mt-1 leading-tight ${color}`}>{value}</p>
+                    <p className="text-[10px] text-slate-500 font-semibold mt-1.5 leading-snug">{note}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="pdf-card border border-slate-200 rounded-lg p-4 mb-5">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-3">
+                  <h2 className="text-sm font-black uppercase tracking-widest text-slate-800">Distribución de egresos</h2>
+                  <span className="text-[10px] font-black text-slate-500">Costo/lb: {costoPorLibraGlobal > 0 ? formatearMoneda(costoPorLibraGlobal) : '—'}</span>
+                </div>
+                <div className="space-y-2.5">
+                  {costItems.map(item => {
+                    const pct = totGlobal.inversionTotal > 0 ? (item.value / totGlobal.inversionTotal) * 100 : 0;
+                    const barW = maxCosto > 0 ? (item.value / maxCosto) * 100 : 0;
+                    return (
+                      <div key={item.label} className="grid grid-cols-[1.1in_1fr_1.45in] items-center gap-3">
+                        <span className="text-[10px] font-bold text-slate-600">{item.label}</span>
+                        <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                          <div className="h-full bg-emerald-600 rounded-full" style={{ width: `${barW}%` }} />
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] font-black text-slate-900">{formatearMoneda(item.value)}</span>
+                          <span className="text-[9px] text-slate-400 font-bold ml-1">({pct.toFixed(1)}%)</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="pdf-card border border-slate-200 rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-slate-900 text-white">
+                  <h2 className="text-sm font-black uppercase tracking-widest">Resumen por lote</h2>
+                </div>
+                <table className="text-[9px]">
+                  <thead className="bg-slate-100 text-slate-500 uppercase tracking-wider">
+                    <tr>
+                      <th className="py-2 px-2 text-left">Lote</th>
+                      <th className="py-2 px-2 text-center">Estado</th>
+                      <th className="py-2 px-2 text-right">Animales</th>
+                      <th className="py-2 px-2 text-right">Inversión</th>
+                      <th className="py-2 px-2 text-right">Ingresos</th>
+                      <th className="py-2 px-2 text-right">Utilidad real</th>
+                      <th className="py-2 px-2 text-right">Estimada</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resumenPorLote.map((r) => (
+                      <tr key={r.id} className="border-t border-slate-100">
+                        <td className="py-2 px-2">
+                          <p className="font-black text-slate-900 leading-tight">{r.nombre}</p>
+                          <p className="text-[8px] text-slate-500 font-semibold">{formatearFechaReporte(r.fechaIngreso)} · {r.diasLote} días</p>
+                        </td>
+                        <td className="py-2 px-2 text-center font-black">{r.estado}</td>
+                        <td className="py-2 px-2 text-right font-semibold">{r.cerdosRestantes} vivos<br /><span className="text-slate-400">{r.cerdosVendidos} vendidos · {r.bajasTotales} bajas</span></td>
+                        <td className="py-2 px-2 text-right font-bold">{formatearMoneda(r.inversionTotal)}</td>
+                        <td className="py-2 px-2 text-right font-bold text-emerald-700">{formatearMoneda(r.ingresosBrutos)}</td>
+                        <td className={`py-2 px-2 text-right font-black ${r.utilidadRealVentas >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatearMoneda(r.utilidadRealVentas)}</td>
+                        <td className={`py-2 px-2 text-right font-black ${r.utilidadNeta >= 0 ? 'text-indigo-700' : 'text-rose-700'}`}>{formatearMoneda(r.utilidadNeta)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="bg-slate-100 border-t-2 border-slate-300">
+                    <tr className="font-black text-slate-900">
+                      <td colSpan={3} className="py-2 px-2 uppercase tracking-widest">Totales</td>
+                      <td className="py-2 px-2 text-right">{formatearMoneda(totGlobal.inversionTotal)}</td>
+                      <td className="py-2 px-2 text-right text-emerald-700">{formatearMoneda(totGlobal.ingresosBrutos)}</td>
+                      <td className={`py-2 px-2 text-right ${totGlobal.utilidadRealVentas >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatearMoneda(totGlobal.utilidadRealVentas)}</td>
+                      <td className={`py-2 px-2 text-right ${totGlobal.utilidadNeta >= 0 ? 'text-indigo-700' : 'text-rose-700'}`}>{formatearMoneda(totGlobal.utilidadNeta)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+            {resumenPorLote.map((r) => (
+              <div key={`pdf-detail-${r.id}`} className="pdf-sheet pdf-page-break-before">
+                <header className="border-b-2 border-slate-900 pb-3 mb-4 flex items-start justify-between">
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Detalle financiero por lote</p>
+                    <h2 className="text-2xl font-black text-slate-950 leading-none mt-1">{r.nombre}</h2>
+                    <p className="text-[10px] text-slate-500 font-bold mt-1">{r.estado} · Ingreso {formatearFechaReporte(r.fechaIngreso)} · {r.diasLote} días</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Utilidad estimada</p>
+                    <p className={`text-xl font-black ${r.utilidadNeta >= 0 ? 'text-indigo-700' : 'text-rose-700'}`}>{formatearMoneda(r.utilidadNeta)}</p>
+                  </div>
+                </header>
+
+                <div className="grid grid-cols-4 gap-2.5 mb-4">
+                  {[
+                    ['Inversión', formatearMoneda(r.inversionTotal)],
+                    ['Ingresos', formatearMoneda(r.ingresosBrutos)],
+                    ['Costo/cerdo', formatearMoneda(r.costoPorCerdoOperado)],
+                    ['Punto equilibrio', r.puntoEquilibrioRestantes > 0 ? formatearMoneda(r.puntoEquilibrioRestantes) : '—'],
+                  ].map(([label, value]) => (
+                    <div key={label} className="pdf-card border border-slate-200 rounded-lg p-3 bg-slate-50">
+                      <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">{label}</p>
+                      <p className="text-[13px] font-black text-slate-900 mt-1 leading-tight">{value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div className="pdf-card border border-slate-200 rounded-lg overflow-hidden">
+                    <h3 className="bg-slate-900 text-white px-3 py-2 text-[10px] font-black uppercase tracking-widest">Costos acumulados</h3>
+                    <div className="p-3 space-y-2 text-[10px] font-semibold">
+                      <div className="flex justify-between"><span>Lechones</span><strong>{formatearMoneda(r.costoLechones)}</strong></div>
+                      <div className="flex justify-between"><span>Alimento</span><strong>{formatearMoneda(r.costoAlimento)}</strong></div>
+                      <div className="flex justify-between"><span>Medicinas y sanidad</span><strong>{formatearMoneda(r.costoMedicinas)}</strong></div>
+                      <div className="flex justify-between"><span>Gastos extra</span><strong>{formatearMoneda(r.costoGastos)}</strong></div>
+                      <div className="flex justify-between"><span>Mano de obra</span><strong>{formatearMoneda(r.costoManoObra)}</strong></div>
+                      <div className="flex justify-between border-t border-slate-200 pt-2 text-slate-950 font-black"><span>Total</span><span>{formatearMoneda(r.inversionTotal)}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="pdf-card border border-slate-200 rounded-lg overflow-hidden">
+                    <h3 className="bg-slate-900 text-white px-3 py-2 text-[10px] font-black uppercase tracking-widest">Indicadores productivos</h3>
+                    <div className="p-3 space-y-2 text-[10px] font-semibold">
+                      <div className="flex justify-between"><span>Iniciales</span><strong>{r.cantidadInicial}</strong></div>
+                      <div className="flex justify-between"><span>Vivos</span><strong>{r.cerdosRestantes}</strong></div>
+                      <div className="flex justify-between"><span>Vendidos</span><strong>{r.cerdosVendidos}</strong></div>
+                      <div className="flex justify-between"><span>Bajas</span><strong>{r.bajasTotales}</strong></div>
+                      <div className="flex justify-between"><span>Peso actual</span><strong>{r.pesoActual > 0 ? `${r.pesoActual.toFixed(1)} lb` : 'Sin peso'}</strong></div>
+                      <div className="flex justify-between"><span>FCA</span><strong>{r.fca > 0 ? r.fca.toFixed(2) : '—'}</strong></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pdf-card border border-slate-200 rounded-lg p-3 mb-4 bg-slate-50">
+                  <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-800 mb-2">Proyección y lectura financiera</h3>
+                  <p className="text-[10px] leading-relaxed text-slate-600 font-semibold">
+                    Ventas registradas por {formatearMoneda(r.ingresosBrutos)}. Los {r.cerdosRestantes} animales vivos cargan una inversión asignada de {formatearMoneda(r.costoAsignadoRestantes)}
+                    {r.costoFuturoRestantes > 0 ? ` y proyectan ${formatearMoneda(r.costoFuturoRestantes)} adicionales para finalizar el ciclo.` : ' y no registran costo futuro proyectado.'}
+                    {' '}La utilidad proyectada de los restantes es {formatearMoneda(r.utilidadProyectadaRestantes)}.
+                  </p>
+                </div>
+
+                <div className="pdf-card border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="px-3 py-2 bg-slate-100 border-b border-slate-200 flex justify-between">
+                    <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-800">Ventas registradas</h3>
+                    <span className="text-[9px] font-black text-slate-500">{r.ventasDetalle.length} transacciones</span>
+                  </div>
+                  {r.ventasDetalle.length === 0 ? (
+                    <p className="p-5 text-center text-[10px] text-slate-400 font-bold italic">No se han registrado ventas parciales.</p>
+                  ) : (
+                    <table className="text-[8.5px]">
+                      <thead className="bg-slate-50 text-slate-500 uppercase tracking-wider">
+                        <tr>
+                          <th className="py-2 px-2 text-left">Fecha</th>
+                          <th className="py-2 px-2 text-right">Cerdos</th>
+                          <th className="py-2 px-2 text-right">Libras</th>
+                          <th className="py-2 px-2 text-right">Prom.</th>
+                          <th className="py-2 px-2 text-right">Q/lb</th>
+                          <th className="py-2 px-2 text-right">Importe</th>
+                          <th className="py-2 px-2 text-right">Costo</th>
+                          <th className="py-2 px-2 text-right">Utilidad</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {r.ventasDetalle.map((venta) => (
+                          <tr key={venta.id} className="border-t border-slate-100">
+                            <td className="py-1.5 px-2 font-bold">{formatearFechaReporte(venta.fecha)}</td>
+                            <td className="py-1.5 px-2 text-right">{venta.cantidadCerdos || 0}</td>
+                            <td className="py-1.5 px-2 text-right">{venta.libras.toFixed(1)}</td>
+                            <td className="py-1.5 px-2 text-right">{venta.pesoPromedio.toFixed(1)}</td>
+                            <td className="py-1.5 px-2 text-right">Q{(Number(venta.precioLibra) || 0).toFixed(2)}</td>
+                            <td className="py-1.5 px-2 text-right font-bold text-emerald-700">{formatearMoneda(venta.totalVenta || 0)}</td>
+                            <td className="py-1.5 px-2 text-right font-bold text-amber-700">{formatearMoneda(venta.costoAsignado)}</td>
+                            <td className={`py-1.5 px-2 text-right font-black ${venta.utilidadEstimada >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatearMoneda(venta.utilidadEstimada)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            ))}
+          </section>
         </div>
       </div>
     );
