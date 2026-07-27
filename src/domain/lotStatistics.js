@@ -168,6 +168,7 @@ export function calculateLotStatistics({
     ventasLote: lotSales,
     proyeccionVentaFinal: projectedFinalSale,
     proyeccionUtilidadFinal: projectedFinalProfit,
+    librasPorSacoFinalizacion: Number(finishingFeed?.librasPorSaco) || 100,
     pesoObjetivoLb: targetWeightLb,
     estaListoParaMezclas: currentWeight >= (Number(mixAlertWeight) || 100),
     cantidadParaProyeccion: projectionCount

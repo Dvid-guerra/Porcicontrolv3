@@ -1931,13 +1931,16 @@ ${JSON.stringify(contextoGranja)}`;
     const itemsValidos = suplementoItems.filter(i => i.tipo && parseFloat(i.libras) > 0);
     if (itemsValidos.length === 0) return mostrarAlerta("Error", "Agrega al menos un ingrediente con libras mayores a cero.");
 
+    const stockReservado = {};
     for (let item of itemsValidos) {
       const lbs = parseFloat(item.libras);
       const itemEnCentral = inventarioCentral.find(i => i.nombre === item.tipo);
-      if (!itemEnCentral || itemEnCentral.stockLbs < lbs) {
-        const faltanLbs = lbs - (itemEnCentral?.stockLbs || 0);
+      const stockDisponible = (itemEnCentral?.stockLbs || 0) - (stockReservado[item.tipo] || 0);
+      if (!itemEnCentral || stockDisponible < lbs) {
+        const faltanLbs = lbs - stockDisponible;
         return mostrarAlerta("Stock Insuficiente", `No tienes suficiente ${item.tipo} en la Bodega Central. Te faltan ${faltanLbs.toFixed(1)} lbs.`);
       }
+      stockReservado[item.tipo] = (stockReservado[item.tipo] || 0) + lbs;
     }
 
     let pesoRealTotal = 0;
@@ -4071,7 +4074,7 @@ return (
                           <h4 className="text-indigo-300 font-black mb-4 uppercase tracking-widest text-[10px] leading-none">Proyección de Cierre Planificada</h4>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                             <div><p className="text-slate-450 text-[10px] font-bold uppercase tracking-wider mb-1 leading-none">Libras Faltantes de Carne</p><p className="text-2xl font-black text-white">{stats.proyeccionLibrasFaltantes.toFixed(0)} lb</p></div>
-                            <div><p className="text-slate-450 text-[10px] font-bold uppercase tracking-wider mb-1 leading-none">Alimento Faltante Estimado</p><p className="text-2xl font-black text-white">{(stats.proyeccionAlimentoFaltante / 100).toFixed(1)} <span className="text-xs font-bold text-slate-400 uppercase">Sacos (100lb)</span></p></div>
+                            <div><p className="text-slate-450 text-[10px] font-bold uppercase tracking-wider mb-1 leading-none">Alimento Faltante Estimado</p><p className="text-2xl font-black text-white">{(stats.proyeccionAlimentoFaltante / stats.librasPorSacoFinalizacion).toFixed(1)} <span className="text-xs font-bold text-slate-400 uppercase">Sacos ({stats.librasPorSacoFinalizacion}lb)</span></p></div>
                           </div>
                         </div>
 
@@ -4617,7 +4620,7 @@ return (
                               <span>{porcentaje.toFixed(1)}%</span>
                             </div>
                             <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden shadow-inner">
-                              <div className="h-full rounded-full transition-all duration-300" style={{ width: `Professional ${porcentaje}%`, backgroundColor: gasto.color }} />
+                              <div className="h-full rounded-full transition-all duration-300" style={{ width: `${porcentaje}%`, backgroundColor: gasto.color }} />
                             </div>
                           </div>
                         );
@@ -5511,7 +5514,7 @@ return (
               <DollarSign size={28} className="text-emerald-600 mr-3 filter drop-shadow-[0_0_8px_rgba(16,185,129,0.25)]" /> Finanzas Globales
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">
-              Análisis de rentabilidad histórica — ${resumenPorLote.length} lotes (${lotesActivos} activos · ${lotesCerrados} cerrados)
+              Análisis de rentabilidad histórica — {resumenPorLote.length} lotes ({lotesActivos} activos · {lotesCerrados} cerrados)
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2 shrink-0 self-start md:self-auto">
@@ -6250,7 +6253,6 @@ return (
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [membership, setMembership] = useState(undefined);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
@@ -6262,29 +6264,6 @@ function App() {
       setLoading(false);
     });
   }, []);
-
-  useEffect(() => {
-    if (!user) {
-      setMembership(undefined);
-      return undefined;
-    }
-
-    // BYPASS DE DESARROLLO LOCAL
-    if (window.location.hostname === 'localhost' || globalAppId === 'agrocontrol-local') {
-      setMembership({ active: true, role: 'admin' });
-      return undefined;
-    }
-
-    const membershipRef = doc(db, 'artifacts', globalAppId, 'members', user.uid);
-    return onSnapshot(
-      membershipRef,
-      snapshot => setMembership(snapshot.exists() ? snapshot.data() : null),
-      error => {
-        console.error('Error verificando membresía:', error);
-        setMembership(null);
-      }
-    );
-  }, [user]);
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -6335,29 +6314,6 @@ function App() {
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-900 text-white">
         <PiggyBank size={80} className="text-emerald-400 mb-6 animate-pulse drop-shadow-2xl" />
         <h2 className="text-2xl font-bold">Cargando Porcicontrol...</h2>
-      </div>
-    );
-  }
-
-  if (user && membership === undefined) {
-    return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-900 text-white">
-        <PiggyBank size={80} className="text-emerald-400 mb-6 animate-pulse" />
-        <h2 className="text-2xl font-bold">Verificando acceso...</h2>
-      </div>
-    );
-  }
-
-  if (user && (!membership?.active || !['admin', 'operator', 'viewer'].includes(membership?.role))) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
-        <div className="max-w-md bg-white rounded-2xl shadow-xl p-8 text-center">
-          <AlertTriangle size={48} className="mx-auto text-amber-500 mb-4" />
-          <h1 className="text-2xl font-black text-slate-800">Cuenta sin acceso</h1>
-          <p className="text-slate-600 my-4">Tu cuenta está autenticada, pero todavía no pertenece a esta granja. Un administrador debe agregarte como miembro.</p>
-          <p className="text-xs text-slate-400 mb-6 break-all">UID: {user.uid}</p>
-          <button onClick={() => signOut(auth)} className="bg-slate-800 text-white px-5 py-3 rounded-xl font-bold">Cerrar sesión</button>
-        </div>
       </div>
     );
   }

@@ -22,15 +22,7 @@ npx firebase functions:secrets:set GEMINI_API_KEY
 
 ## Acceso por granja
 
-Los datos de la granja predeterminada usan el identificador `agrocontrol-local`. Antes de activar las reglas, crea manualmente el primer administrador en Firestore:
-
-```text
-artifacts/agrocontrol-local/members/UID_DEL_ADMIN
-  active: true
-  role: "admin"
-```
-
-Después, los administradores pueden incorporar operadores o lectores. Los roles válidos son `admin`, `operator` y `viewer`.
+Los datos de la granja predeterminada usan el identificador `agrocontrol-local`. El acceso es de un solo nivel: cualquier cuenta autenticada (correo/contraseña o Google) puede entrar y usar la app por completo. No hay roles ni una colección de miembros que aprobar manualmente.
 
 ## Comandos
 
