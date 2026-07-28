@@ -4,7 +4,7 @@ import {
   ChevronRight, ClipboardList, CheckCircle, Trash2, TrendingUp, PiggyBank,
   AlertTriangle, HeartPulse, Receipt, PieChart, Calculator, Leaf, Printer, X, Clock,
   Archive, Box, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
-  CheckSquare, Beaker, ShoppingCart, FileText, Download, LogOut, Menu
+  Beaker, ShoppingCart, FileText, Download, LogOut, Menu
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { calculateLotStatistics } from './domain/lotStatistics.js';
@@ -272,19 +272,6 @@ const INITIAL_PROTOCOLO_SANITARIO = [
   },
 ];
 
-const INITIAL_RUTINA_DIARIA = [
-  'Revisar agua y presión de bebederos',
-  'Revisar comederos y consumo',
-  'Observar diarrea',
-  'Observar tos o dificultad respiratoria',
-  'Detectar animales retrasados, flacos o decaídos',
-  'Revisar amontonamiento por frío o calor',
-  'Retirar alimento viejo o húmedo',
-  'Revisar limpieza de pasillos y corrales',
-  'Confirmar que no haya bajas',
-  'Registrar observaciones sanitarias del día'
-];
-
 const addDaysToDate = (dateStr, days) => {
   const result = new Date(dateStr + 'T00:00:00');
   result.setDate(result.getDate() + days);
@@ -392,7 +379,7 @@ function Porcicontrol({ user, db, appId }) {
   const [ventas, setVentas, l16] = useCloudStorage('agro_ventas', [], user, db, appId);
   const [constanteSchaeffer, setConstanteSchaeffer, l17] = useCloudStorage('agro_constante_schaeffer', 400, user, db, appId);
   const [notificacionesPush, setNotificacionesPush, l18] = useCloudStorage('agro_notificaciones_push', [], user, db, appId);
-  const [rutinaDiaria, setRutinaDiaria, l19] = useCloudStorage('agro_rutina_diaria', [], user, db, appId);
+  const [eventosCalendario, setEventosCalendario, l19] = useCloudStorage('agro_eventos_calendario', [], user, db, appId);
   const [catalogoMedico, setCatalogoMedico, l20] = useCloudStorage('agro_catalogo_medico', INITIAL_CATALOGO_MEDICO, user, db, appId);
   const [comprasMedicas, setComprasMedicas, l21] = useCloudStorage('agro_compras_medicas', [], user, db, appId);
   const [usosMedicos, setUsosMedicos, l22] = useCloudStorage('agro_usos_medicos', [], user, db, appId);
@@ -416,7 +403,7 @@ function Porcicontrol({ user, db, appId }) {
   const listVentas = safeArr(ventas);
   const listProtocoloSanitario = safeArr(protocoloSanitarioBase, INITIAL_PROTOCOLO_SANITARIO);
   const listTareasSanidad = safeArr(tareasSanidad);
-  const listRutinaDiaria = safeArr(rutinaDiaria);
+  const listEventosCalendario = safeArr(eventosCalendario);
   const listCatalogoMedico = safeArr(catalogoMedico, INITIAL_CATALOGO_MEDICO);
   const listComprasMedicas = safeArr(comprasMedicas);
   const listUsosMedicos = safeArr(usosMedicos);
@@ -450,8 +437,8 @@ function Porcicontrol({ user, db, appId }) {
   const [sanidadFiltro, setSanidadFiltro] = useState('hoy');
   const [agendaDetalleAbierto, setAgendaDetalleAbierto] = useState(null);
   const [medicinaSeleccionadaId, setMedicinaSeleccionadaId] = useState(INITIAL_CATALOGO_MEDICO[0]?.id || '');
-  const [rutinaTab, setRutinaTab] = useState('corrales');
-  const [corralesRutinaAbiertos, setCorralesRutinaAbiertos] = useState({});
+  const [calendarioFiltroCorral, setCalendarioFiltroCorral] = useState('todos');
+  const [calendarioFiltroTipo, setCalendarioFiltroTipo] = useState('todos');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // --- ESTADOS VENTA Y FINANZAS ---
@@ -1577,122 +1564,25 @@ ${JSON.stringify(contextoGranja)}`;
 
   const todayIso = () => new Date().toISOString().split('T')[0];
 
-  const handleAgregarRutinaExtra = (e) => {
+  const handleAgregarEventoCalendario = (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const item = fd.get('item').trim();
-    if (!item) return;
-    setRutinaDiaria(prev => [...safeArr(prev), {
+    const titulo = fd.get('titulo').trim();
+    const fecha = fd.get('fecha');
+    if (!titulo || !fecha) return;
+    setEventosCalendario(prev => [...safeArr(prev), {
       id: crypto.randomUUID(),
-      fecha: todayIso(),
-      item,
-      extra: true,
-      estado: 'pendiente',
-      observacion: '',
+      titulo,
+      fecha,
       corralId: fd.get('corralId') || '',
-      updatedAt: Date.now()
+      nota: fd.get('nota').trim(),
+      creadoEn: Date.now()
     }]);
     e.target.reset();
   };
 
-  const RUTINA_CORRAL_ITEMS = [
-    'Revisar agua y bebederos',
-    'Revisar comederos y consumo',
-    'Revisar limpieza del corral',
-    'Observar comportamiento general',
-    'Verificar ausencia de diarrea',
-    'Verificar ausencia de tos',
-    'Detectar animales retrasados',
-    'Confirmar que no haya bajas'
-  ];
-
-  const RUTINA_GENERAL_ITEMS = [
-    'Limpieza general de pasillos',
-    'Revisar bodega central',
-    'Revisar bodega médica',
-    'Revisar basura y desechos',
-    'Revisar herramientas y equipos',
-    'Revisar puertas, candados y seguridad',
-    'Revisar agua general de la granja',
-    'Registrar observaciones generales'
-  ];
-
-  const getRutinaCorralDelDia = (corralId, fecha = todayIso()) => {
-    return RUTINA_CORRAL_ITEMS.map(item => {
-      const saved = listRutinaDiaria.find(r => r.fecha === fecha && r.corralId === corralId && r.item === item);
-      return {
-        id: saved?.id || `${fecha}_${corralId}_${item}`,
-        fecha,
-        corralId,
-        item,
-        estado: saved?.estado || 'pendiente',
-        observacion: saved?.observacion || ''
-      };
-    });
-  };
-
-  const getRutinaGeneralDelDia = (fecha = todayIso()) => {
-    return RUTINA_GENERAL_ITEMS.map(item => {
-      const saved = listRutinaDiaria.find(r => r.fecha === fecha && !r.corralId && r.item === item);
-      return {
-        id: saved?.id || `${fecha}_general_${item}`,
-        fecha,
-        corralId: '',
-        item,
-        estado: saved?.estado || 'pendiente',
-        observacion: saved?.observacion || ''
-      };
-    });
-  };
-
-  const handleActualizarRutinaCorral = (corralId, item, updates, fecha = todayIso()) => {
-    setRutinaDiaria(prev => {
-      const current = safeArr(prev);
-      const existing = current.find(r => r.fecha === fecha && r.corralId === corralId && r.item === item);
-      if (existing) {
-        return current.map(r => r.id === existing.id ? { ...r, ...updates, updatedAt: Date.now() } : r);
-      }
-      return [...current, {
-        id: crypto.randomUUID(),
-        fecha,
-        corralId,
-        item,
-        estado: 'pendiente',
-        observacion: '',
-        ...updates,
-        updatedAt: Date.now()
-      }];
-    });
-  };
-
-  const handleMarcarCorralTodoBien = (corralId, fecha = todayIso()) => {
-    setRutinaDiaria(prev => {
-      const current = safeArr(prev);
-      const sinItemsDelCorral = current.filter(r => !(r.fecha === fecha && r.corralId === corralId && RUTINA_CORRAL_ITEMS.includes(r.item)));
-      const revisionesOk = RUTINA_CORRAL_ITEMS.map(item => ({
-        id: crypto.randomUUID(),
-        fecha,
-        corralId,
-        item,
-        estado: 'hecho',
-        observacion: '',
-        updatedAt: Date.now()
-      }));
-      return [...sinItemsDelCorral, ...revisionesOk];
-    });
-  };
-
-  const handleReportarProblemaCorral = (corralId, problema, fecha = todayIso()) => {
-    setRutinaDiaria(prev => [...safeArr(prev), {
-      id: crypto.randomUUID(),
-      fecha,
-      corralId,
-      item: `Problema: ${problema}`,
-      extra: true,
-      estado: 'pendiente',
-      observacion: problema,
-      updatedAt: Date.now()
-    }]);
+  const handleEliminarEventoCalendario = (id) => {
+    setEventosCalendario(prev => safeArr(prev).filter(ev => ev.id !== id));
   };
 
   const handleActualizarMetaSuplemento = (loteId, faseNum, porcentajeStr) => {
@@ -2459,197 +2349,201 @@ return (
   };
 
 
-  const renderRutinaDiaria = () => {
+  const renderCalendario = () => {
     const hoy = todayIso();
     const lotesActivos = listLotes.filter(l => l.estado === 'Activo');
-    const corralesActivos = listCorrales.filter(c => lotesActivos.some(l => l.corralId === c.id));
-    const revisionesCorral = corralesActivos.flatMap(c => getRutinaCorralDelDia(c.id, hoy));
-    const revisionesGenerales = getRutinaGeneralDelDia(hoy);
-    const revisionesHechas = revisionesCorral.filter(r => r.estado === 'hecho').length;
-    const revisionesGeneralesHechas = revisionesGenerales.filter(r => r.estado === 'hecho').length;
-    const totalRevisiones = revisionesCorral.length + revisionesGenerales.length;
-    const totalHechas = revisionesHechas + revisionesGeneralesHechas;
-    const problemasHoy = listRutinaDiaria.filter(r => r.fecha === hoy && r.extra && r.corralId);
-    const corralesCompletos = corralesActivos.filter(c => getRutinaCorralDelDia(c.id, hoy).every(r => r.estado === 'hecho')).length;
-    const avance = totalRevisiones > 0 ? Math.round((totalHechas / totalRevisiones) * 100) : 0;
-    const problemasRapidos = ['Diarrea', 'Tos', 'No comen', 'Se amontonan', 'Falta agua', 'Retrasado', 'Posible baja', 'Corral sucio'];
-    const hace7 = new Date(`${hoy}T00:00:00`);
-    hace7.setDate(hace7.getDate() - 7);
-    const historialRutina = listRutinaDiaria
-      .filter(r => r.fecha && new Date(`${r.fecha}T00:00:00`) >= hace7 && (r.observacion || r.extra))
-      .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')) || (b.updatedAt || 0) - (a.updatedAt || 0))
-      .slice(0, 20);
-    const toggleCorralRutina = (corralId) => {
-      setCorralesRutinaAbiertos(prev => ({ ...prev, [corralId]: !prev[corralId] }));
+
+    const eventosSanidad = listTareasSanidad
+      .filter(t => (t.estado || 'pendiente') === 'pendiente')
+      .map(t => {
+        const lote = listLotes.find(l => l.id === t.loteId);
+        if (!lote || lote.estado !== 'Activo') return null;
+        const corral = listCorrales.find(c => c.id === lote.corralId);
+        const fecha = t.fechaObjetivo || (lote.fechaIngreso ? addDaysToIsoDate(lote.fechaIngreso, Number(t.dia) || 0) : '');
+        if (!fecha) return null;
+        return {
+          id: `sanidad_${t.id}`,
+          tipo: 'sanidad',
+          fecha,
+          titulo: t.tarea,
+          detalle: t.producto || '',
+          corralId: lote.corralId || '',
+          corralNombre: corral?.nombre || 'Corral'
+        };
+      })
+      .filter(Boolean);
+
+    const eventosVencimiento = inventarioMedico
+      .filter(item => item.proximoVencimiento)
+      .map(item => ({
+        id: `vencimiento_${item.id}`,
+        tipo: 'vencimiento',
+        fecha: item.proximoVencimiento.vencimiento,
+        titulo: `Vence: ${item.nombre}`,
+        detalle: `Stock ${Number(item.stock).toFixed(1)} ${item.unidad}`,
+        corralId: '',
+        corralNombre: 'Bodega Médica'
+      }));
+
+    const eventosCierre = lotesActivos.map(lote => {
+      const stats = calcularEstadisticasLote(lote);
+      if (stats.pesoActual <= 0 || stats.pesoActual >= stats.pesoObjetivoLb || stats.adg <= 0) return null;
+      const diasRestantes = Math.ceil((stats.pesoObjetivoLb - stats.pesoActual) / stats.adg);
+      if (diasRestantes < 0 || diasRestantes > 120) return null;
+      const corral = listCorrales.find(c => c.id === lote.corralId);
+      return {
+        id: `cierre_${lote.id}`,
+        tipo: 'cierre',
+        fecha: addDaysToIsoDate(hoy, diasRestantes),
+        titulo: `Posible fecha de venta: ${lote.nombre || lote.raza || 'Lote'}`,
+        detalle: `Estimado a ${stats.pesoObjetivoLb} lb con la ganancia diaria actual`,
+        corralId: lote.corralId || '',
+        corralNombre: corral?.nombre || 'Corral'
+      };
+    }).filter(Boolean);
+
+    const eventosManuales = listEventosCalendario.map(ev => {
+      const corral = listCorrales.find(c => c.id === ev.corralId);
+      return {
+        id: `manual_${ev.id}`,
+        tipo: 'manual',
+        fecha: ev.fecha,
+        titulo: ev.titulo,
+        detalle: ev.nota || '',
+        corralId: ev.corralId || '',
+        corralNombre: ev.corralId ? (corral?.nombre || 'Corral') : 'General',
+        manualId: ev.id
+      };
+    });
+
+    const todosLosEventos = [...eventosSanidad, ...eventosVencimiento, ...eventosCierre, ...eventosManuales]
+      .filter(ev => ev.fecha)
+      .map(ev => {
+        const diffDias = Math.ceil((new Date(`${ev.fecha}T00:00:00`) - new Date(`${hoy}T00:00:00`)) / 86_400_000);
+        return { ...ev, diffDias, vencida: diffDias < 0 };
+      })
+      .filter(ev => (calendarioFiltroCorral === 'todos' || ev.corralId === calendarioFiltroCorral) && (calendarioFiltroTipo === 'todos' || ev.tipo === calendarioFiltroTipo))
+      .sort((a, b) => a.diffDias - b.diffDias);
+
+    const ORDEN_GRUPOS = ['Vencidos', 'Hoy', 'Mañana', 'Esta semana', 'Este mes', 'Más adelante'];
+    const getEtiquetaGrupo = (ev) => {
+      if (ev.vencida) return 'Vencidos';
+      if (ev.diffDias === 0) return 'Hoy';
+      if (ev.diffDias === 1) return 'Mañana';
+      if (ev.diffDias <= 7) return 'Esta semana';
+      if (ev.diffDias <= 30) return 'Este mes';
+      return 'Más adelante';
     };
-    const marcarGeneralesTodoBien = () => {
-      RUTINA_GENERAL_ITEMS.forEach(item => handleActualizarRutinaCorral('', item, { estado: 'hecho', observacion: '' }));
+    const grupos = ORDEN_GRUPOS.reduce((acc, key) => { acc[key] = []; return acc; }, {});
+    todosLosEventos.forEach(ev => { grupos[getEtiquetaGrupo(ev)].push(ev); });
+
+    const resumen = {
+      vencidos: todosLosEventos.filter(e => e.vencida).length,
+      hoy: todosLosEventos.filter(e => e.diffDias === 0).length,
+      semana: todosLosEventos.filter(e => e.diffDias >= 0 && e.diffDias <= 7).length
     };
 
-return (
-      <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto animate-in fade-in duration-500">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-slate-100 pb-5">
+    const TIPO_META = {
+      sanidad: { label: 'Sanidad', icon: Syringe, className: 'bg-rose-50 text-rose-600 border-rose-100' },
+      vencimiento: { label: 'Vencimiento', icon: AlertCircle, className: 'bg-amber-50 text-amber-600 border-amber-100' },
+      cierre: { label: 'Cierre de lote', icon: TrendingUp, className: 'bg-indigo-50 text-indigo-600 border-indigo-100' },
+      manual: { label: 'Personalizado', icon: Calendar, className: 'bg-slate-100 text-slate-600 border-slate-200' }
+    };
+
+    const renderEventoCard = (ev) => {
+      const meta = TIPO_META[ev.tipo];
+      const Icon = meta.icon;
+      return (
+        <div key={ev.id} className="border border-slate-100 rounded-2xl bg-white p-4 flex items-start justify-between gap-3 shadow-[0_4px_20px_rgb(0,0,0,0.008)]">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center border ${meta.className}`}>
+              <Icon size={16} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <span className="text-xs font-black text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg">{ev.corralNombre}</span>
+                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${meta.className}`}>{meta.label}</span>
+                {ev.vencida && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">Vencido</span>}
+              </div>
+              <p className="font-bold text-slate-800 text-sm leading-snug">{ev.titulo}</p>
+              {ev.detalle && <p className="text-xs text-slate-500 mt-0.5">{ev.detalle}</p>}
+              <p className="text-[10px] text-slate-400 font-semibold mt-1">{ev.fecha}</p>
+            </div>
+          </div>
+          {ev.tipo === 'manual' && (
+            <button type="button" onClick={() => handleEliminarEventoCalendario(ev.manualId)} className="text-slate-300 hover:text-rose-500 shrink-0 p-1.5 transition-colors">
+              <Trash2 size={16} />
+            </button>
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-5xl mx-auto animate-in fade-in duration-500">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
             <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2.5 leading-none">
-              <CheckSquare size={28} className="text-emerald-500 filter drop-shadow-[0_0_8px_rgba(16,185,129,0.2)]" /> Rutina Diaria
+              <Calendar size={28} className="text-emerald-500 filter drop-shadow-[0_0_8px_rgba(16,185,129,0.2)]" /> Calendario
             </h2>
-            <p className="text-slate-500 text-sm mt-1.5">Revisión y checklist operativo: alimentación, agua y control sanitario por corral.</p>
+            <p className="text-slate-500 text-sm mt-1.5">Próximos eventos de todos los corrales: sanidad, vencimientos y cierres estimados.</p>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center sm:min-w-[400px]">
-            <div className="bg-emerald-50/50 border border-emerald-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-emerald-600">{avance}%</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Avance</p></div>
-            <div className="bg-blue-50/50 border border-blue-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-blue-600">{corralesCompletos}/{corralesActivos.length}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Corrales</p></div>
-            <div className="bg-amber-50/50 border border-amber-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-amber-600">{Math.max(0, totalRevisiones - totalHechas)}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Pendientes</p></div>
-            <div className="bg-rose-50/50 border border-rose-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-rose-600">{problemasHoy.length}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Alertas</p></div>
+          <div className="grid grid-cols-3 gap-3 text-center sm:min-w-[320px]">
+            <div className="bg-rose-50/50 border border-rose-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-rose-600">{resumen.vencidos}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Vencidos</p></div>
+            <div className="bg-emerald-50/50 border border-emerald-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-emerald-600">{resumen.hoy}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Hoy</p></div>
+            <div className="bg-blue-50/50 border border-blue-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-blue-600">{resumen.semana}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Esta semana</p></div>
           </div>
         </div>
 
-        <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.015)] overflow-hidden">
-          <div className="flex border-b border-slate-100 bg-slate-50/50 p-1">
-            <button type="button" onClick={() => setRutinaTab('corrales')} className={`flex-1 sm:flex-initial text-center px-6 py-3 text-xs font-bold rounded-xl transition-all duration-200 ${rutinaTab === 'corrales' ? 'bg-white shadow-sm text-emerald-600 border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}>
-              Por Corral
-            </button>
-            <button type="button" onClick={() => setRutinaTab('generales')} className={`flex-1 sm:flex-initial text-center px-6 py-3 text-xs font-bold rounded-xl transition-all duration-200 ${rutinaTab === 'generales' ? 'bg-white shadow-sm text-emerald-600 border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}>
-              Generales de Granja
-            </button>
-          </div>
-
-          <div className="p-6">
-            {rutinaTab === 'corrales' && (corralesActivos.length === 0 ? (
-              <div className="p-10 text-center text-slate-400 font-semibold italic">No hay corrales activos para revisar hoy.</div>
-            ) : (
-              <div className="space-y-4">
-                {corralesActivos.map(corral => {
-                  const lote = lotesActivos.find(l => l.corralId === corral.id);
-                  const revisiones = getRutinaCorralDelDia(corral.id, hoy);
-                  const hechas = revisiones.filter(r => r.estado === 'hecho').length;
-                  const problemasCorral = problemasHoy.filter(p => p.corralId === corral.id);
-                  const abierto = corralesRutinaAbiertos[corral.id] ?? true;
-                  return (
-                    <div key={corral.id} className="border border-slate-100 rounded-2xl overflow-hidden shadow-[0_4px_20px_rgb(0,0,0,0.006)]">
-                      <button type="button" onClick={() => toggleCorralRutina(corral.id)} className="w-full flex items-center justify-between gap-3 p-4 bg-slate-50/30 hover:bg-slate-50 text-left border-b border-slate-100 transition-colors">
-                        <div>
-                          <h3 className="font-bold text-slate-900 flex items-center gap-2">
-                            <ChevronRight size={18} className={`text-emerald-500 transition-transform duration-200 ${abierto ? 'rotate-90' : ''}`} />
-                            {corral.nombre}
-                          </h3>
-                          <p className="text-xs text-slate-400 ml-6 mt-0.5">{lote ? `${lote.cantidad} iniciales · ingreso ${lote.fechaIngreso}` : 'Sin lote activo'}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {problemasCorral.length > 0 && <span className="bg-rose-50 border border-rose-100 text-rose-600 text-[10px] font-black px-2 py-0.5 rounded-full">{problemasCorral.length} Alertas</span>}
-                          <span className={`text-[10px] font-black px-2.5 py-1 rounded-full ${hechas === revisiones.length ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{hechas}/{revisiones.length}</span>
-                        </div>
-                      </button>
-
-                      {abierto && (
-                        <div className="p-5 bg-white space-y-4">
-                          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100/50 pb-3">
-                            <button type="button" onClick={() => handleMarcarCorralTodoBien(corral.id)} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-emerald-500/5 transition-colors">Marcar todo bien</button>
-                            <span className="w-px h-6 bg-slate-200 mx-1 hidden sm:block"></span>
-                            {problemasRapidos.map(problema => (
-                              <button key={problema} type="button" onClick={() => handleReportarProblemaCorral(corral.id, problema)} className="px-3 py-2 rounded-xl bg-rose-50/50 text-rose-600 border border-rose-100/30 text-[11px] font-bold hover:bg-rose-100/50 transition-colors">
-                                {problema}
-                              </button>
-                            ))}
-                          </div>
-
-                          <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl overflow-hidden shadow-[0_4px_15px_rgb(0,0,0,0.005)]">
-                            {revisiones.map(item => (
-                              <div key={item.item} className={`grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3 p-3.5 items-center transition-colors ${item.estado === 'hecho' ? 'bg-emerald-50/20' : 'bg-white'}`}>
-                                <label className="flex items-center gap-3 cursor-pointer select-none">
-                                  <input type="checkbox" checked={item.estado === 'hecho'} onChange={(e) => handleActualizarRutinaCorral(corral.id, item.item, { estado: e.target.checked ? 'hecho' : 'pendiente' })} className="w-4.5 h-4.5 accent-emerald-600 rounded cursor-pointer" />
-                                  <span className={`text-sm font-semibold ${item.estado === 'hecho' ? 'text-emerald-800/60 line-through' : 'text-slate-800'}`}>{item.item}</span>
-                                </label>
-                                <input value={item.observacion || ''} onChange={(e) => handleActualizarRutinaCorral(corral.id, item.item, { observacion: e.target.value })} placeholder="Observación..." className="p-2 px-3 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/30 transition-all" />
-                              </div>
-                            ))}
-                            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3 p-3.5 items-center bg-slate-50/40 border-t border-slate-100">
-                              <span className="text-xs font-bold text-slate-700">Observación general del corral</span>
-                              <input
-                                value={listRutinaDiaria.find(r => r.fecha === hoy && r.corralId === corral.id && r.item === 'Observación general')?.observacion || ''}
-                                onChange={(e) => handleActualizarRutinaCorral(corral.id, 'Observación general', { estado: e.target.value.trim() ? 'hecho' : 'pendiente', observacion: e.target.value })}
-                                placeholder="Nota general..."
-                                className="p-2 px-3 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white transition-all"
-                              />
-                            </div>
-                          </div>
-
-                          {problemasCorral.length > 0 && (
-                            <div className="bg-rose-50/50 border border-rose-100/50 rounded-xl p-4">
-                              <p className="text-[10px] font-black uppercase tracking-wider text-rose-500 mb-2">Alertas Reportadas Hoy</p>
-                              <div className="flex flex-wrap gap-2">
-                                {problemasCorral.map(p => (
-                                  <span key={p.id} className="bg-white border border-rose-100 text-rose-600 text-xs font-bold px-3 py-1 rounded-xl shadow-sm">{p.observacion || p.item}</span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+        <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.015)] p-4 flex flex-col sm:flex-row gap-3 sm:items-center">
+          <select value={calendarioFiltroCorral} onChange={(e) => setCalendarioFiltroCorral(e.target.value)} className="p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 text-xs font-semibold">
+            <option value="todos">Todos los corrales</option>
+            {listCorrales.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { value: 'todos', label: 'Todos' },
+              { value: 'sanidad', label: 'Sanidad' },
+              { value: 'vencimiento', label: 'Vencimientos' },
+              { value: 'cierre', label: 'Cierre de lote' },
+              { value: 'manual', label: 'Personalizados' }
+            ].map(op => (
+              <button key={op.value} type="button" onClick={() => setCalendarioFiltroTipo(op.value)} className={`px-3 py-2 rounded-xl text-[11px] font-bold border transition-colors ${calendarioFiltroTipo === op.value ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}>
+                {op.label}
+              </button>
             ))}
-
-            {rutinaTab === 'generales' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                  <div>
-                    <h3 className="font-bold text-slate-800 text-base">Tareas generales de la granja</h3>
-                    <p className="text-xs text-slate-500 mt-1">{revisionesGeneralesHechas}/{revisionesGenerales.length} completadas hoy.</p>
-                  </div>
-                  <button type="button" onClick={marcarGeneralesTodoBien} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs shadow-md shadow-emerald-500/5 transition-colors">Marcar todo bien</button>
-                </div>
-                <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl overflow-hidden shadow-[0_4px_15px_rgb(0,0,0,0.005)] bg-white">
-                  {revisionesGenerales.map(item => (
-                    <div key={item.item} className={`grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3 p-3.5 items-center transition-colors ${item.estado === 'hecho' ? 'bg-emerald-50/20' : 'bg-white'}`}>
-                      <label className="flex items-center gap-3 cursor-pointer select-none">
-                        <input type="checkbox" checked={item.estado === 'hecho'} onChange={(e) => handleActualizarRutinaCorral('', item.item, { estado: e.target.checked ? 'hecho' : 'pendiente' })} className="w-4.5 h-4.5 accent-emerald-600 rounded cursor-pointer" />
-                        <span className={`text-sm font-semibold ${item.estado === 'hecho' ? 'text-emerald-800/60 line-through' : 'text-slate-800'}`}>{item.item}</span>
-                      </label>
-                      <input value={item.observacion || ''} onChange={(e) => handleActualizarRutinaCorral('', item.item, { observacion: e.target.value })} placeholder="Observación..." className="p-2 px-3 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/30 transition-all" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.015)] flex flex-col justify-between">
-            <div>
-              <h3 className="font-bold text-md text-slate-800 mb-2">Agregar revisión extra</h3>
-              <p className="text-xs text-slate-400 mb-4">Inserta una revisión especial fuera de los parámetros diarios normales.</p>
+        <div className="space-y-6">
+          {ORDEN_GRUPOS.filter(g => grupos[g].length > 0).map(grupo => (
+            <div key={grupo}>
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-3">{grupo} · {grupos[grupo].length}</h3>
+              <div className="space-y-3">
+                {grupos[grupo].map(renderEventoCard)}
+              </div>
             </div>
-            <form onSubmit={handleAgregarRutinaExtra} className="grid grid-cols-1 md:grid-cols-[1fr_150px_auto] gap-3 mt-4">
-              <input name="item" required placeholder="Ej. Revisar ventilación..." className="p-2.5 px-3.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 text-sm transition-all" />
-              <select name="corralId" className="p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 text-sm transition-all">
-                <option value="">Sin corral</option>
-                {listCorrales.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-              </select>
-              <button type="submit" className="bg-slate-950 hover:bg-slate-900 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors shadow-md">Agregar</button>
-            </form>
-          </div>
+          ))}
+          {todosLosEventos.length === 0 && (
+            <div className="bg-white border border-slate-100 rounded-2xl p-12 text-center text-slate-400 font-semibold italic">
+              No hay eventos próximos con estos filtros.
+            </div>
+          )}
+        </div>
 
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
-            <h3 className="font-bold text-md text-slate-800 mb-4">Observaciones recientes</h3>
-            <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
-              {historialRutina.map(item => {
-                const corral = listCorrales.find(c => c.id === item.corralId);
-                return (
-                  <div key={item.id} className="grid grid-cols-[80px_1fr] gap-3 p-3 bg-slate-50 border border-slate-100/50 rounded-xl text-sm hover:bg-slate-100/30 transition-colors">
-                    <span className="text-[11px] font-semibold text-slate-400">{item.fecha}</span>
-                    <div>
-                      <p className="font-bold text-slate-800 leading-snug">{corral?.nombre || 'General'} · {item.item}</p>
-                      {item.observacion && <p className="text-xs text-slate-500 font-medium mt-1 leading-relaxed bg-white border border-slate-100 p-1.5 px-2.5 rounded-lg">{item.observacion}</p>}
-                    </div>
-                  </div>
-                );
-              })}
-              {historialRutina.length === 0 && <p className="text-slate-400 italic text-center py-8 text-xs font-semibold">Sin observaciones recientes.</p>}
-            </div>
-          </div>
+        <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
+          <h3 className="font-bold text-md text-slate-800 mb-2">Agregar evento personalizado</h3>
+          <p className="text-xs text-slate-400 mb-4">Para recordatorios que no dependen del protocolo sanitario, como visitas o entregas.</p>
+          <form onSubmit={handleAgregarEventoCalendario} className="grid grid-cols-1 md:grid-cols-[1fr_150px_150px_auto] gap-3">
+            <input name="titulo" required placeholder="Ej. Visita del veterinario" className="p-2.5 px-3.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 text-sm transition-all" />
+            <input type="date" name="fecha" required defaultValue={hoy} className="p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 text-sm transition-all" />
+            <select name="corralId" className="p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 text-sm transition-all">
+              <option value="">Sin corral</option>
+              {listCorrales.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            </select>
+            <button type="submit" className="bg-slate-950 hover:bg-slate-900 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors shadow-md">Agregar</button>
+            <input name="nota" placeholder="Nota (opcional)" className="p-2.5 px-3.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 text-sm transition-all md:col-span-4" />
+          </form>
         </div>
       </div>
     );
@@ -3896,7 +3790,7 @@ return (
                     <div className="bg-emerald-50/40 p-5 rounded-2xl border border-emerald-100 shadow-sm space-y-4">
                       <div className="flex flex-col gap-1">
                         <h3 className="font-extrabold text-base text-emerald-950 flex items-center gap-1.5"><ClipboardList size={20} className="text-emerald-600" /> Agenda de Control Sanitario</h3>
-                        <p className="text-slate-500 font-medium mt-0.5">La agenda completa, rutina diaria y protocolos se administran desde Control Sanitario.</p>
+                        <p className="text-slate-500 font-medium mt-0.5">La agenda completa y los protocolos se administran desde Control Sanitario.</p>
                       </div>
                       <div className="flex flex-col sm:flex-row gap-2.5 font-bold">
                         <button type="button" onClick={() => { setVista('controlSanitario'); setSanidadTab('agenda'); }} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl transition-colors text-center shadow-md shadow-emerald-600/10">
@@ -4760,24 +4654,17 @@ return (
 
     const getRiesgoSanitarioLote = (lote) => {
       const tareas = tareasEnriquecidas.filter(t => t.loteId === lote.id);
-      const corralId = lote.corralId;
       const hace7 = new Date(`${hoy}T00:00:00`);
       hace7.setDate(hace7.getDate() - 7);
       const bajas7 = listBajas
         .filter(b => b.loteId === lote.id && b.fecha && new Date(`${b.fecha}T00:00:00`) >= hace7)
         .reduce((sum, b) => sum + (Number(b.cantidad) || 0), 0);
-      const obsCriticas = listRutinaDiaria.filter(r =>
-        r.corralId === corralId &&
-        r.fecha &&
-        new Date(`${r.fecha}T00:00:00`) >= hace7 &&
-        /diarrea|tos|deca|flac|retras|muerte|baja|sangre|fiebre|no come/i.test(`${r.item || ''} ${r.observacion || ''}`)
-      ).length;
       const sinStock = tareas.filter(t => t.estado === 'pendiente' && t.productoMedico && (Number(t.productoMedico.stock) || 0) <= 0).length;
       const vencidas = tareas.filter(t => t.vencida).length;
       const hoyPendientes = tareas.filter(t => t.diffDias === 0 && t.estado === 'pendiente').length;
-      const score = (vencidas * 3) + hoyPendientes + (bajas7 * 4) + (obsCriticas * 2) + (sinStock * 2);
+      const score = (vencidas * 3) + hoyPendientes + (bajas7 * 4) + (sinStock * 2);
       const nivel = score >= 6 ? 'alto' : score >= 3 ? 'medio' : 'bajo';
-      return { score, nivel, vencidas, hoyPendientes, bajas7, obsCriticas, sinStock };
+      return { score, nivel, vencidas, hoyPendientes, bajas7, sinStock };
     };
 
     const getHistorialSanitarioLote = (lote) => {
@@ -4790,10 +4677,7 @@ return (
       const bajas = listBajas
         .filter(b => b.loteId === lote.id)
         .map(b => ({ id: `b_${b.id}`, fecha: b.fecha, tipo: 'Baja', texto: b.causa, detalle: `${b.cantidad} animales` }));
-      const rutina = listRutinaDiaria
-        .filter(r => r.corralId === lote.corralId && r.observacion)
-        .map(r => ({ id: `r_${r.id}`, fecha: r.fecha, tipo: 'Rutina', texto: r.item, detalle: r.observacion }));
-      return [...tareasHechas, ...aplicaciones, ...bajas, ...rutina]
+      return [...tareasHechas, ...aplicaciones, ...bajas]
         .filter(i => i.fecha)
         .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
         .slice(0, 6);
@@ -6086,8 +5970,8 @@ return (
                 <DollarSign size={18} className="mr-3" /> Finanzas Globales
               </button>
 
-              <button onClick={() => { setVista('rutinaDiaria'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'rutinaDiaria' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <CheckSquare size={18} className="mr-3" /> Rutina Diaria
+              <button onClick={() => { setVista('calendario'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'calendario' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
+                <Calendar size={18} className="mr-3" /> Calendario
               </button>
             </div>
           </div>
@@ -6128,7 +6012,7 @@ return (
               {vista === 'dashboard' && <><LayoutDashboard size={18} className="mr-2 text-emerald-600" /> Panel Principal</>}
               {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600" /> Bodega Central Unificada</>}
               {vista === 'controlSanitario' && <><HeartPulse size={18} className="mr-2 text-rose-600" /> Control Sanitario</>}
-              {vista === 'rutinaDiaria' && <><CheckSquare size={18} className="mr-2 text-emerald-600" /> Rutina Diaria</>}
+              {vista === 'calendario' && <><Calendar size={18} className="mr-2 text-emerald-600" /> Calendario</>}
               {vista === 'corralDetail' && <><Box size={18} className="mr-2 text-emerald-600" /> Control de Corral</>}
               {vista === 'historial' && <><ClipboardList size={18} className="mr-2 text-indigo-600" /> Historial de Lotes Finalizados</>}
               {vista === 'reporteHistorial' && <><ClipboardList size={18} className="mr-2 text-indigo-600" /> Visor de Reporte Histórico</>}
@@ -6145,7 +6029,7 @@ return (
           {vista === 'dashboard' && renderDashboard()}
           {vista === 'bodega' && renderBodega()}
           {vista === 'controlSanitario' && renderControlSanitario()}
-          {vista === 'rutinaDiaria' && renderRutinaDiaria()}
+          {vista === 'calendario' && renderCalendario()}
           {vista === 'laboratorio' && renderLaboratorio()}
           {vista === 'historial' && renderHistorial()}
           {vista === 'config' && renderConfiguracion()}
