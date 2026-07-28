@@ -433,12 +433,15 @@ function Porcicontrol({ user, db, appId }) {
   const [finanzasLoteAbierto, setFinanzasLoteAbierto] = useState(null);
   const [loteHistorialSeleccionado, setLoteHistorialSeleccionado] = useState(null);
   const [tabActiva, setTabActiva] = useState('resumen');
-  const [sanidadTab, setSanidadTab] = useState('agenda');
-  const [sanidadFiltro, setSanidadFiltro] = useState('hoy');
   const [agendaDetalleAbierto, setAgendaDetalleAbierto] = useState(null);
   const [medicinaSeleccionadaId, setMedicinaSeleccionadaId] = useState(INITIAL_CATALOGO_MEDICO[0]?.id || '');
   const [calendarioFiltroCorral, setCalendarioFiltroCorral] = useState('todos');
   const [calendarioFiltroTipo, setCalendarioFiltroTipo] = useState('todos');
+  const [calendarioCursor, setCalendarioCursor] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
+  const [calendarioDiaSeleccionado, setCalendarioDiaSeleccionado] = useState(() => new Date().toISOString().split('T')[0]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // --- ESTADOS VENTA Y FINANZAS ---
@@ -451,6 +454,7 @@ function Porcicontrol({ user, db, appId }) {
   // --- ESTADOS BODEGA & PUROS ---
   const [modalConfirm, setModalConfirm] = useState({ visible: false, tipo: 'confirm', titulo: '', mensaje: '', onConfirm: null });
   const [bodegaCategoria, setBodegaCategoria] = useState('concentrado');
+  const [bodegaVistaTab, setBodegaVistaTab] = useState('alimento');
   const [puroInput, setPuroInput] = useState({ tipo: '', cantidad: '', unidad: 'sacos' });
 
   // --- ESTADOS ALIMENTACIÓN ---
@@ -1562,6 +1566,20 @@ ${JSON.stringify(contextoGranja)}`;
     mostrarAlerta('Protocolo generado', 'Se creó el calendario sanitario para este lote.');
   };
 
+  const getProductoMedicoLigado = (item) => {
+    if (!item) return null;
+    const directo = listCatalogoMedico.find(m => m.id === item.productoMedicoId);
+    if (directo) return inventarioMedico.find(m => m.id === directo.id) || directo;
+
+    const texto = `${item.producto || ''} ${item.tarea || ''}`.toLowerCase();
+    const candidato = listCatalogoMedico.find(m => {
+      const nombre = m.nombre.toLowerCase();
+      return texto.includes(nombre) ||
+        nombre.split(/[ /]+/).filter(Boolean).some(parte => parte.length > 5 && texto.includes(parte));
+    });
+    return candidato ? (inventarioMedico.find(m => m.id === candidato.id) || candidato) : null;
+  };
+
   const todayIso = () => new Date().toISOString().split('T')[0];
 
   const handleAgregarEventoCalendario = (e) => {
@@ -2192,6 +2210,37 @@ ${JSON.stringify(contextoGranja)}`;
 
 
   const renderBodega = () => {
+    const hoy = todayIso();
+    const lotesActivosBodega = listLotes.filter(l => l.estado === 'Activo');
+    const alertasMedicas = inventarioMedico.filter(item => {
+      const vencimientoCercano = item.proximoVencimiento && item.proximoVencimiento.diffDias <= (Number(item.diasAlertaVencimiento) || 30);
+      return item.bajoStock || vencimientoCercano;
+    });
+    const valorBodegaMedica = inventarioMedico.reduce((sum, item) => sum + (item.valorStock || 0), 0);
+    const tareasSanidadPendientesBodega = listTareasSanidad
+      .filter(t => (t.estado || 'pendiente') === 'pendiente')
+      .map(t => {
+        const lote = listLotes.find(l => l.id === t.loteId);
+        if (!lote || lote.estado !== 'Activo') return null;
+        const corral = listCorrales.find(c => c.id === lote.corralId);
+        const fechaObjetivo = t.fechaObjetivo || (lote.fechaIngreso ? addDaysToIsoDate(lote.fechaIngreso, Number(t.dia) || 0) : '');
+        const diffDias = fechaObjetivo ? Math.ceil((new Date(`${fechaObjetivo}T00:00:00`) - new Date(`${hoy}T00:00:00`)) / 86_400_000) : 9999;
+        return { ...t, lote, corral, fechaObjetivo, diffDias };
+      })
+      .filter(Boolean);
+    const tareasProximasConMedicina = tareasSanidadPendientesBodega.filter(t => t.productoMedicoId && t.diffDias >= 0 && t.diffDias <= 14);
+    const ordenCompraMedicaSugerida = Object.values(tareasProximasConMedicina.reduce((acc, tarea) => {
+      const med = inventarioMedico.find(m => m.id === tarea.productoMedicoId);
+      if (!med) return acc;
+      if (!acc[med.id]) {
+        acc[med.id] = { ...med, tareas: [], requeridoOperativo: 0, faltanteOperativo: 0 };
+      }
+      acc[med.id].tareas.push(tarea);
+      acc[med.id].requeridoOperativo += 1;
+      acc[med.id].faltanteOperativo = Math.max(0, acc[med.id].requeridoOperativo - (Number(med.stock) || 0));
+      return acc;
+    }, {})).filter(item => item.faltanteOperativo > 0 || item.bajoStock);
+
 return (
       <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
@@ -2201,8 +2250,19 @@ return (
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">Monitoreo de materias primas y generación automatizada de compras.</p>
           </div>
-          <button onClick={() => descargarPDF('orden-compra-pdf', 'Orden_Compra_Granja.pdf')} className="bg-slate-950 hover:bg-slate-900 text-white font-bold py-2.5 px-5 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center shrink-0 self-start md:self-auto gap-2">
-            <Download size={18} /> Generar Orden de Compra (PDF)
+          {bodegaVistaTab === 'alimento' && (
+            <button onClick={() => descargarPDF('orden-compra-pdf', 'Orden_Compra_Granja.pdf')} className="bg-slate-950 hover:bg-slate-900 text-white font-bold py-2.5 px-5 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center shrink-0 self-start md:self-auto gap-2">
+              <Download size={18} /> Generar Orden de Compra (PDF)
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-2 bg-white p-1.5 rounded-xl border border-slate-100 shadow-sm w-fit">
+          <button type="button" onClick={() => setBodegaVistaTab('alimento')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'alimento' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+            <Wheat size={16} /> Alimento
+          </button>
+          <button type="button" onClick={() => setBodegaVistaTab('farmacia')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'farmacia' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+            <Syringe size={16} /> Farmacia
           </button>
         </div>
 
@@ -2246,6 +2306,7 @@ return (
           </div>
         </div>
 
+        {bodegaVistaTab === 'alimento' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           <div className="lg:col-span-4 space-y-6">
             <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
@@ -2344,6 +2405,267 @@ return (
             </div>
           </div>
         </div>
+        )}
+
+        {bodegaVistaTab === 'farmacia' && (
+          <div className="space-y-8">
+            {/* METRICS GRID */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500 mb-1 leading-none">Valor en Farmacia</p>
+                <p className="text-2xl font-black text-indigo-900">{formatearMoneda(valorBodegaMedica)}</p>
+              </div>
+              <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-rose-500 mb-1 leading-none">Alertas de Stock</p>
+                <p className="text-2xl font-black text-rose-700">{alertasMedicas.length}</p>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1 leading-none">Medicamentos en Catálogo</p>
+                <p className="text-2xl font-black text-slate-800">{listCatalogoMedico.length}</p>
+              </div>
+              <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 mb-1 leading-none">Aplicaciones Realizadas</p>
+                <p className="text-2xl font-black text-emerald-700">{listUsosMedicos.length}</p>
+              </div>
+            </div>
+
+            {/* COMPRA MÈDICA SUGERIDA */}
+            {ordenCompraMedicaSugerida.length > 0 && (
+              <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-2xl p-5 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                  <h3 className="font-extrabold text-fuchsia-900 text-sm flex items-center gap-1.5"><ShoppingCart size={16} /> Compra Sugerida de Fármacos</h3>
+                  <span className="text-[9px] font-bold text-fuchsia-600 bg-white border border-fuchsia-200/60 px-2.5 py-1 rounded-lg uppercase tracking-wider">Próximos 14 días</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {ordenCompraMedicaSugerida.map(item => (
+                    <div key={item.id} className="bg-white border border-fuchsia-100 rounded-xl p-4 flex justify-between items-center shadow-sm">
+                      <div>
+                        <p className="font-extrabold text-slate-800 text-sm">{item.nombre}</p>
+                        <p className="text-xs text-slate-500 mt-1">{item.tareas.length} tareas programadas • stock: {Number(item.stock || 0).toFixed(1)} {item.unidad}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-lg font-black text-fuchsia-700 bg-fuchsia-100 px-3 py-1 rounded-xl">{Math.ceil(item.faltanteOperativo)} {item.unidad}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ALERTAS DE FARMACIA */}
+            {alertasMedicas.length > 0 && (
+              <div className="bg-rose-50/50 border border-rose-100 rounded-2xl p-5 shadow-sm">
+                <h3 className="font-extrabold text-rose-900 text-sm mb-4 flex items-center gap-1.5"><AlertTriangle size={16} /> Medicamentos Vencidos o con Stock Crítico</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {alertasMedicas.map(item => (
+                    <div key={item.id} className="bg-white border border-rose-100 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                      <div>
+                        <p className="font-bold text-slate-800 text-sm leading-snug">{item.nombre}</p>
+                        <p className="text-xs text-slate-500 mt-1 font-semibold flex items-center gap-1">
+                          Stock: <span className={`font-bold ${item.bajoStock ? 'text-rose-600' : 'text-slate-700'}`}>{item.stock.toFixed(1)} {item.unidad}</span>
+                          {item.bajoStock && <span className="text-[10px] text-white bg-rose-500 px-1.5 py-0.5 rounded-md leading-none uppercase">Crítico</span>}
+                        </p>
+                      </div>
+                      {item.proximoVencimiento && (
+                        <p className="text-[10px] text-rose-600 font-black uppercase tracking-wider bg-rose-50 p-2 border border-rose-100 rounded-lg mt-3 leading-none text-center">
+                          Vence: {item.proximoVencimiento.vencimiento} ({item.proximoVencimiento.diffDias} días)
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* FORMS GRID */}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              {/* COMPRA */}
+              <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
+                <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><ShoppingCart size={18} className="text-indigo-600" /> Registrar Compra Médica</h3>
+                <form onSubmit={handleComprarMedicina} className="space-y-4 text-xs font-semibold">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha de Compra</label>
+                      <input type="date" name="fecha" required defaultValue={hoy} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Medicamento a Ingresar</label>
+                      <select name="productoId" required value={medicinaSeleccionadaId} onChange={(e) => setMedicinaSeleccionadaId(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-white font-bold text-slate-700">
+                        {listCatalogoMedico.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad</label>
+                      <input type="number" name="cantidad" step="0.01" min="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50 font-bold" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Costo Total (Q)</label>
+                      <input type="number" name="costoTotal" step="0.01" min="0" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50 font-bold" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha Vencimiento</label>
+                      <input type="date" name="vencimiento" className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <input name="lote" placeholder="Lote / Serie del fármaco (opcional)" className="p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50" />
+                    <input name="proveedor" placeholder="Droguería / Veterinaria (opcional)" className="p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50" />
+                  </div>
+                  <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-3 rounded-xl transition-colors shadow-lg shadow-indigo-600/10 mt-2">Ingresar Fármaco</button>
+                </form>
+              </div>
+
+              {/* APLICACIÓN */}
+              <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
+                <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Syringe size={18} className="text-rose-600" /> Aplicar Tratamiento Médico</h3>
+                <form onSubmit={handleAplicarMedicina} className="space-y-4 text-xs font-semibold">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha de Aplicación</label>
+                      <input type="date" name="fecha" required defaultValue={hoy} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 bg-slate-50/50" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Lote / Corral Destino</label>
+                      <select name="loteId" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 bg-white font-bold text-slate-700">
+                        <option value="">Selecciona Corral...</option>
+                        {lotesActivosBodega.map(lote => {
+                          const corral = listCorrales.find(c => c.id === lote.corralId);
+                          return <option key={lote.id} value={lote.id}>{corral?.nombre || 'Corral'} • ingreso: {lote.fechaIngreso}</option>;
+                        })}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fármaco de Farmacia</label>
+                      <select name="productoId" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-white font-bold text-slate-700">
+                        {inventarioMedico.map(m => <option key={m.id} value={m.id}>{m.nombre} (Disponible: {m.stock.toFixed(1)} {m.unidad})</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad a Dosificar</label>
+                      <input type="number" name="cantidad" step="0.01" min="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-slate-50/50 font-bold" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Ligar a Tarea de Agenda (opcional)</label>
+                    <select name="tareaId" className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-white font-semibold text-slate-600 text-xs">
+                      <option value="">Sin ligar a tarea</option>
+                      {tareasSanidadPendientesBodega.map(t => (
+                        <option key={t.id} value={t.id}>{t.corral?.nombre} · {t.fechaObjetivo} · {t.tarea}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Diagnóstico / Comentarios</label>
+                    <textarea name="observacion" placeholder="Escribe síntomas, diagnósticos, observaciones..." className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-slate-50/50 min-h-[80px]" />
+                  </div>
+                  <button type="submit" className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-3 rounded-xl transition-colors shadow-lg shadow-rose-600/10 mt-2">Aplicar y Descontar Stock</button>
+                </form>
+              </div>
+            </div>
+
+            {/* INVENTARIO COMPLETO TABLE */}
+            <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_4px_25px_rgb(0,0,0,0.005)] overflow-hidden">
+              <div className="p-5 border-b border-slate-50 bg-slate-900 text-white flex items-center justify-between">
+                <h3 className="font-extrabold text-base">Inventario de Medicinas en Bodega</h3>
+                <span className="text-[10px] text-emerald-400/90 font-bold uppercase tracking-wider bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">Farmacia al Día</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider">
+                    <tr>
+                      <th className="p-4 pl-6">Medicamento</th>
+                      <th className="p-4 text-center">Categoría</th>
+                      <th className="p-4 text-center">Stock Físico</th>
+                      <th className="p-4 text-right">Costo Promedio</th>
+                      <th className="p-4 text-right">Valor Stock</th>
+                      <th className="p-4 pr-6">Lote Vencimiento</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {inventarioMedico.map(item => (
+                      <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="p-4 pl-6">
+                          <p className="font-bold text-slate-800">{item.nombre}</p>
+                          <p className="text-[10px] text-slate-400 font-semibold uppercase mt-0.5">Mínimo Crítico: {item.stockMinimo} {item.unidad}</p>
+                        </td>
+                        <td className="p-4 text-center text-xs font-bold text-slate-500">{item.categoria}</td>
+                        <td className="p-4 text-center">
+                          <span className={`px-2.5 py-1 rounded-full font-black text-xs border ${item.bajoStock ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
+                            {item.stock.toFixed(1)} {item.unidad}
+                          </span>
+                        </td>
+                        <td className="p-4 text-right font-semibold text-slate-600">{formatearMoneda(item.costoPromedio)}</td>
+                        <td className="p-4 text-right font-black text-indigo-600">{formatearMoneda(item.valorStock)}</td>
+                        <td className="p-4 text-xs font-medium text-slate-500 pr-6">
+                          {item.proximoVencimiento ? `${item.proximoVencimiento.vencimiento} (${item.proximoVencimiento.diffDias} días)` : 'Sin lote/vence registrado'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* CATÀLOGO FORM */}
+              <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
+                <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Plus size={18} className="text-indigo-600" /> Catálogo Farmacéutico</h3>
+                <form onSubmit={handleAgregarMedicamentoCatalogo} className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 bg-slate-50 p-4 border border-slate-100 rounded-xl">
+                  <input name="nombre" required placeholder="Nombre fármaco" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
+                  <input name="categoria" placeholder="Categoría (Ej. Hidratante)" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
+                  <input name="unidad" placeholder="Unidad (Ej. frasco, sobre)" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
+                  <input type="number" name="stockMinimo" step="0.01" placeholder="Stock mínimo" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
+                  <input type="number" name="diasAlertaVencimiento" placeholder="Alerta vencimiento (Días)" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white col-span-1 sm:col-span-2" />
+                  <button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl px-4 py-2.5 text-xs col-span-1 sm:col-span-2">Agregar Producto</button>
+                </form>
+                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
+                  {listCatalogoMedico.map(m => (
+                    <div key={m.id} className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-100 rounded-xl text-xs">
+                      <div>
+                        <p className="font-bold text-slate-800">{m.nombre}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5 font-medium">{m.categoria} • {m.unidad} • min: {m.stockMinimo}</p>
+                      </div>
+                      <button type="button" onClick={() => handleEliminarMedicamentoCatalogo(m.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-all"><Trash2 size={15} /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* MOVIMIENTOS */}
+              <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
+                <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><CheckCircle size={18} className="text-rose-600" /> Bitácora Reciente</h3>
+                <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1 scrollbar-thin">
+                  {[...listComprasMedicas.map(c => ({ ...c, movimiento: 'entrada' })), ...listUsosMedicos.map(u => ({ ...u, movimiento: 'salida' }))]
+                    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')))
+                    .slice(0, 30)
+                    .map(mov => {
+                      const lote = listLotes.find(l => l.id === mov.loteId);
+                      const corral = listCorrales.find(c => c.id === lote?.corralId);
+                      return (
+                        <div key={`${mov.movimiento}_${mov.id}`} className="flex justify-between items-center p-3.5 bg-slate-50 border border-slate-100 rounded-xl text-xs">
+                          <div>
+                            <p className="font-bold text-slate-800">{mov.nombre}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5 font-medium">{mov.fecha} • {mov.cantidad} {mov.unidad} {corral ? `• ${corral.nombre}` : ''}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className={`font-bold ${mov.movimiento === 'entrada' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {mov.movimiento === 'entrada' ? '+' : '-'}{formatearMoneda(mov.costoTotal ?? mov.costo ?? 0)}
+                            </span>
+                            <button type="button" onClick={() => handleEliminarDato(mov.movimiento === 'entrada' ? 'compraMedica' : 'usoMedico', mov.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-all"><Trash2 size={15} /></button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {listComprasMedicas.length === 0 && listUsosMedicos.length === 0 && <p className="text-center text-slate-400 italic py-8 text-xs font-semibold">No hay movimientos médicos registrados.</p>}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -2368,7 +2690,9 @@ return (
           titulo: t.tarea,
           detalle: t.producto || '',
           corralId: lote.corralId || '',
-          corralNombre: corral?.nombre || 'Corral'
+          corralNombre: corral?.nombre || 'Corral',
+          tareaId: t.id,
+          observacion: t.observacion || ''
         };
       })
       .filter(Boolean);
@@ -2425,18 +2749,6 @@ return (
       .filter(ev => (calendarioFiltroCorral === 'todos' || ev.corralId === calendarioFiltroCorral) && (calendarioFiltroTipo === 'todos' || ev.tipo === calendarioFiltroTipo))
       .sort((a, b) => a.diffDias - b.diffDias);
 
-    const ORDEN_GRUPOS = ['Vencidos', 'Hoy', 'Mañana', 'Esta semana', 'Este mes', 'Más adelante'];
-    const getEtiquetaGrupo = (ev) => {
-      if (ev.vencida) return 'Vencidos';
-      if (ev.diffDias === 0) return 'Hoy';
-      if (ev.diffDias === 1) return 'Mañana';
-      if (ev.diffDias <= 7) return 'Esta semana';
-      if (ev.diffDias <= 30) return 'Este mes';
-      return 'Más adelante';
-    };
-    const grupos = ORDEN_GRUPOS.reduce((acc, key) => { acc[key] = []; return acc; }, {});
-    todosLosEventos.forEach(ev => { grupos[getEtiquetaGrupo(ev)].push(ev); });
-
     const resumen = {
       vencidos: todosLosEventos.filter(e => e.vencida).length,
       hoy: todosLosEventos.filter(e => e.diffDias === 0).length,
@@ -2444,36 +2756,93 @@ return (
     };
 
     const TIPO_META = {
-      sanidad: { label: 'Sanidad', icon: Syringe, className: 'bg-rose-50 text-rose-600 border-rose-100' },
-      vencimiento: { label: 'Vencimiento', icon: AlertCircle, className: 'bg-amber-50 text-amber-600 border-amber-100' },
-      cierre: { label: 'Cierre de lote', icon: TrendingUp, className: 'bg-indigo-50 text-indigo-600 border-indigo-100' },
-      manual: { label: 'Personalizado', icon: Calendar, className: 'bg-slate-100 text-slate-600 border-slate-200' }
+      sanidad: { label: 'Sanidad', icon: Syringe, className: 'bg-rose-50 text-rose-600 border-rose-100', dot: 'bg-rose-500' },
+      vencimiento: { label: 'Vencimiento', icon: AlertCircle, className: 'bg-amber-50 text-amber-600 border-amber-100', dot: 'bg-amber-500' },
+      cierre: { label: 'Cierre de lote', icon: TrendingUp, className: 'bg-indigo-50 text-indigo-600 border-indigo-100', dot: 'bg-indigo-500' },
+      manual: { label: 'Personalizado', icon: Calendar, className: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'bg-slate-500' }
     };
+
+    const eventosPorFecha = todosLosEventos.reduce((acc, ev) => {
+      if (!acc[ev.fecha]) acc[ev.fecha] = [];
+      acc[ev.fecha].push(ev);
+      return acc;
+    }, {});
+    const eventosVencidos = todosLosEventos.filter(e => e.vencida);
+    const eventosDelDiaSeleccionado = eventosPorFecha[calendarioDiaSeleccionado] || [];
+
+    const { year, month } = calendarioCursor;
+    const primerDiaMes = new Date(year, month, 1);
+    const diasEnMes = new Date(year, month + 1, 0).getDate();
+    const offsetInicio = (primerDiaMes.getDay() + 6) % 7;
+    const totalCeldas = Math.ceil((offsetInicio + diasEnMes) / 7) * 7;
+    const celdasMes = Array.from({ length: totalCeldas }, (_, i) => {
+      const diaNum = i - offsetInicio + 1;
+      if (diaNum < 1 || diaNum > diasEnMes) return null;
+      const fechaIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(diaNum).padStart(2, '0')}`;
+      return { diaNum, fechaIso, eventos: eventosPorFecha[fechaIso] || [] };
+    });
+    const nombreMes = primerDiaMes.toLocaleDateString('es-GT', { month: 'long', year: 'numeric' });
+    const irMesAnterior = () => setCalendarioCursor(prev => (prev.month === 0 ? { year: prev.year - 1, month: 11 } : { year: prev.year, month: prev.month - 1 }));
+    const irMesSiguiente = () => setCalendarioCursor(prev => (prev.month === 11 ? { year: prev.year + 1, month: 0 } : { year: prev.year, month: prev.month + 1 }));
+    const irHoy = () => {
+      const d = new Date();
+      setCalendarioCursor({ year: d.getFullYear(), month: d.getMonth() });
+      setCalendarioDiaSeleccionado(hoy);
+    };
+    const fechaSeleccionadaFormateada = new Date(`${calendarioDiaSeleccionado}T00:00:00`).toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
     const renderEventoCard = (ev) => {
       const meta = TIPO_META[ev.tipo];
       const Icon = meta.icon;
+      const esSanidad = ev.tipo === 'sanidad';
+      const abierto = esSanidad && agendaDetalleAbierto === ev.tareaId;
       return (
-        <div key={ev.id} className="border border-slate-100 rounded-2xl bg-white p-4 flex items-start justify-between gap-3 shadow-[0_4px_20px_rgb(0,0,0,0.008)]">
-          <div className="flex items-start gap-3 min-w-0">
-            <div className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center border ${meta.className}`}>
-              <Icon size={16} />
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2 mb-1">
-                <span className="text-xs font-black text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg">{ev.corralNombre}</span>
-                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${meta.className}`}>{meta.label}</span>
-                {ev.vencida && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">Vencido</span>}
+        <div key={ev.id} className="border border-slate-100 rounded-2xl bg-white overflow-hidden shadow-[0_4px_20px_rgb(0,0,0,0.008)]">
+          <div className="p-4 flex items-start justify-between gap-3">
+            <div
+              role={esSanidad ? 'button' : undefined}
+              tabIndex={esSanidad ? 0 : undefined}
+              onClick={esSanidad ? () => setAgendaDetalleAbierto(abierto ? null : ev.tareaId) : undefined}
+              className={`flex items-start gap-3 min-w-0 ${esSanidad ? 'cursor-pointer' : ''}`}
+            >
+              <div className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center border ${meta.className}`}>
+                <Icon size={16} />
               </div>
-              <p className="font-bold text-slate-800 text-sm leading-snug">{ev.titulo}</p>
-              {ev.detalle && <p className="text-xs text-slate-500 mt-0.5">{ev.detalle}</p>}
-              <p className="text-[10px] text-slate-400 font-semibold mt-1">{ev.fecha}</p>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className="text-xs font-black text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg">{ev.corralNombre}</span>
+                  <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${meta.className}`}>{meta.label}</span>
+                  {ev.vencida && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">Vencido</span>}
+                </div>
+                <p className="font-bold text-slate-800 text-sm leading-snug">{ev.titulo}</p>
+                {ev.detalle && <p className="text-xs text-slate-500 mt-0.5">{ev.detalle}</p>}
+                <p className="text-[10px] text-slate-400 font-semibold mt-1">{ev.fecha}</p>
+              </div>
             </div>
+            {ev.tipo === 'manual' && (
+              <button type="button" onClick={() => handleEliminarEventoCalendario(ev.manualId)} className="text-slate-300 hover:text-rose-500 shrink-0 p-1.5 transition-colors">
+                <Trash2 size={16} />
+              </button>
+            )}
+            {esSanidad && (
+              <button type="button" onClick={() => handleActualizarTareaSanidad(ev.tareaId, { estado: 'hecho' })} className="shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg text-[11px] transition-colors">
+                Completar
+              </button>
+            )}
           </div>
-          {ev.tipo === 'manual' && (
-            <button type="button" onClick={() => handleEliminarEventoCalendario(ev.manualId)} className="text-slate-300 hover:text-rose-500 shrink-0 p-1.5 transition-colors">
-              <Trash2 size={16} />
-            </button>
+
+          {esSanidad && abierto && (
+            <div className="border-t border-slate-100 bg-slate-50/50 p-4 space-y-2.5">
+              <textarea
+                value={ev.observacion || ''}
+                onChange={(e) => handleActualizarTareaSanidad(ev.tareaId, { observacion: e.target.value })}
+                placeholder="Escribe observaciones sanitarias o de dosis..."
+                className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-xs min-h-[70px] bg-white transition-all shadow-inner"
+              />
+              <button type="button" onClick={() => handleActualizarTareaSanidad(ev.tareaId, { estado: 'omitido' })} className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 rounded-xl text-xs transition-colors">
+                Omitir Paso
+              </button>
+            </div>
           )}
         </div>
       );
@@ -2515,20 +2884,79 @@ return (
           </div>
         </div>
 
-        <div className="space-y-6">
-          {ORDEN_GRUPOS.filter(g => grupos[g].length > 0).map(grupo => (
-            <div key={grupo}>
-              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-3">{grupo} · {grupos[grupo].length}</h3>
-              <div className="space-y-3">
-                {grupos[grupo].map(renderEventoCard)}
+        {eventosVencidos.length > 0 && (
+          <div className="bg-rose-50/50 border border-rose-100 rounded-2xl p-5 space-y-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-rose-500">Vencidos · {eventosVencidos.length}</p>
+            <div className="space-y-3">
+              {eventosVencidos.map(renderEventoCard)}
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
+          <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.015)] p-4 sm:p-6">
+            <div className="flex items-center justify-between mb-4">
+              <button type="button" onClick={irMesAnterior} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500 transition-colors">
+                <ChevronRight size={18} className="rotate-180" />
+              </button>
+              <div className="text-center">
+                <h3 className="font-black text-slate-800 text-base capitalize">{nombreMes}</h3>
+                <button type="button" onClick={irHoy} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 uppercase tracking-wider mt-0.5">Ir a hoy</button>
               </div>
+              <button type="button" onClick={irMesSiguiente} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500 transition-colors">
+                <ChevronRight size={18} />
+              </button>
             </div>
-          ))}
-          {todosLosEventos.length === 0 && (
-            <div className="bg-white border border-slate-100 rounded-2xl p-12 text-center text-slate-400 font-semibold italic">
-              No hay eventos próximos con estos filtros.
+
+            <div className="grid grid-cols-7 gap-1 sm:gap-1.5 mb-1.5 text-center">
+              {['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((d, i) => (
+                <div key={i} className="text-[10px] font-black text-slate-400 uppercase py-1">{d}</div>
+              ))}
             </div>
-          )}
+
+            <div className="grid grid-cols-7 gap-1 sm:gap-1.5">
+              {celdasMes.map((celda, i) => {
+                if (!celda) return <div key={i} />;
+                const esHoy = celda.fechaIso === hoy;
+                const esSeleccionado = celda.fechaIso === calendarioDiaSeleccionado;
+                const tiposDelDia = [...new Set(celda.eventos.map(e => e.tipo))];
+                const tieneVencido = celda.eventos.some(e => e.vencida);
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setCalendarioDiaSeleccionado(celda.fechaIso)}
+                    className={`aspect-square rounded-xl border flex flex-col items-center justify-center gap-1 transition-all ${
+                      esSeleccionado ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' :
+                      esHoy ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+                      tieneVencido ? 'bg-rose-50/60 border-rose-100 text-slate-700' :
+                      'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="text-xs font-bold">{celda.diaNum}</span>
+                    {tiposDelDia.length > 0 && (
+                      <div className="flex gap-0.5 flex-wrap justify-center px-0.5">
+                        {tiposDelDia.slice(0, 4).map(tipo => (
+                          <span key={tipo} className={`w-1.5 h-1.5 rounded-full ${esSeleccionado ? 'bg-white' : TIPO_META[tipo].dot}`} />
+                        ))}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.015)] p-6">
+            <h3 className="font-bold text-slate-800 text-sm capitalize mb-1">{fechaSeleccionadaFormateada}</h3>
+            <p className="text-xs text-slate-400 mb-4">{eventosDelDiaSeleccionado.length} evento(s) este día.</p>
+            <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1 scrollbar-thin">
+              {eventosDelDiaSeleccionado.map(renderEventoCard)}
+              {eventosDelDiaSeleccionado.length === 0 && (
+                <p className="text-slate-400 italic text-center py-8 text-xs font-semibold">Sin eventos este día.</p>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
@@ -3165,12 +3593,129 @@ return (
           </div>
         </div>
       </div>
+
+      {/* SECCIÓN: PROTOCOLO SANITARIO BASE */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgba(0,0,0,0.015)] space-y-6">
+        <div>
+          <h3 className="font-extrabold text-base text-slate-800 flex items-center gap-2"><HeartPulse className="text-rose-500" size={18} /> Protocolo Sanitario Base</h3>
+          <p className="text-slate-400 text-xs mt-1">Este calendario clínico estándar se aplicará a todos los nuevos lotes cuando ingreses un corral. Modifica los pasos según las pautas de tu veterinario. Los pasos pendientes aparecen automáticamente en el Calendario.</p>
+        </div>
+        <div className="space-y-3">
+          {listProtocoloSanitario.sort((a, b) => (Number(a.dia) || 0) - (Number(b.dia) || 0)).map(paso => (
+            <div key={paso.id} className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-slate-50/50 transition-colors">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-3 text-xs">
+                <div>
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    <span className="bg-slate-900 text-white text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md">{paso.rango || `Día ${paso.dia}`}</span>
+                    <span className="bg-rose-50 text-rose-700 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-rose-100">{paso.tipo || 'Sanidad'}</span>
+                    {paso.duracion && <span className="bg-slate-200 text-slate-600 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md">Duración: {paso.duracion}</span>}
+                  </div>
+                  <h4 className="font-extrabold text-slate-800 text-sm leading-tight">{paso.tarea}</h4>
+                  {paso.producto && <p className="text-slate-600 mt-1.5"><strong>Producto Sugerido:</strong> {paso.producto}</p>}
+                  {getProductoMedicoLigado(paso) && (
+                    <p className="text-indigo-600 font-bold mt-1 font-mono">
+                      Farmacia Ligada: {getProductoMedicoLigado(paso).nombre}
+                    </p>
+                  )}
+                  {paso.condicion && <p className="text-slate-500 mt-1 text-[11px] leading-relaxed"><strong>Condición:</strong> {paso.condicion}</p>}
+                  {paso.nota && <p className="text-slate-400 bg-white p-2.5 rounded-lg border border-slate-200/50 mt-2 leading-relaxed">{paso.nota}</p>}
+                </div>
+                <button onClick={() => handleEliminarPasoProtocolo(paso.id)} className="text-slate-300 hover:text-rose-500 transition-colors p-1 rounded-md shrink-0 self-end md:self-start" title="Eliminar paso">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={handleAgregarPasoProtocolo} className="bg-rose-50/30 border border-rose-200/60 rounded-2xl p-5 space-y-4 text-xs font-semibold">
+          <h4 className="text-rose-900 font-extrabold text-sm flex items-center gap-1.5"><Plus size={16} /> Agregar Paso Clínico al Protocolo Base</h4>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Día de Aplicación</label>
+              <input type="number" name="dia" min="0" required placeholder="Día (ej. 7)" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white text-slate-800 font-bold" />
+            </div>
+            <div>
+              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Rango Descriptivo</label>
+              <input name="rango" placeholder="Ej. Día 7-10" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
+            </div>
+            <div>
+              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Tipo de Actividad</label>
+              <input name="tipo" placeholder="Ej. Vacunación" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
+            </div>
+            <div>
+              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Duración (Frecuencia)</label>
+              <input name="duracion" placeholder="Ej. 1 revisión" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Acción / Tarea Principal</label>
+            <input name="tarea" required placeholder="Ej. Aplicar Ivermectina 1% inyectable" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Producto Comercial Sugerido</label>
+              <input name="producto" placeholder="Ej. Ivermectina L.A." className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
+            </div>
+            <div>
+              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Ligar a Fármaco de Farmacia</label>
+              <select name="productoMedicoId" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white text-slate-700">
+                <option value="">Sin ligar</option>
+                {listCatalogoMedico.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Indicaciones Clínicas (Dosis, Cuándo aplicar)</label>
+            <textarea name="condicion" placeholder="Sarna, piojos o comezón..." className="w-full p-3 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white min-h-[76px]" />
+          </div>
+          <div>
+            <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Advertencia o Nota Técnica</label>
+            <textarea name="nota" placeholder="Pesar bien para evitar sobredosis..." className="w-full p-3 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white min-h-[76px]" />
+          </div>
+          <button type="submit" className="bg-rose-600 hover:bg-rose-700 text-white font-black px-6 py-3 rounded-xl transition-all shadow-md shadow-rose-600/10 flex items-center justify-center gap-1.5"><Plus size={16} /> Guardar Paso Sanitario</button>
+        </form>
+      </div>
     </div>
   );
   // --- RENDER: DETALLE DEL CORRAL ---
   const renderCorralDetail = () => {
     const loteActivo = getLoteActivo(corralSeleccionado.id);
     const stats = calcularEstadisticasLote(loteActivo, simuladorMuertesExtra);
+
+    const hoySanidad = todayIso();
+    const tareasLoteSanidad = loteActivo ? listTareasSanidad
+      .filter(t => t.loteId === loteActivo.id)
+      .map(t => {
+        const fechaObjetivo = t.fechaObjetivo || (loteActivo.fechaIngreso ? addDaysToIsoDate(loteActivo.fechaIngreso, Number(t.dia) || 0) : '');
+        const diffDias = fechaObjetivo ? Math.ceil((new Date(`${fechaObjetivo}T00:00:00`) - new Date(`${hoySanidad}T00:00:00`)) / 86_400_000) : 9999;
+        return { ...t, fechaObjetivo, diffDias, vencida: (t.estado || 'pendiente') === 'pendiente' && diffDias < 0 };
+      }) : [];
+    const proximaTareaSanidad = tareasLoteSanidad
+      .filter(t => (t.estado || 'pendiente') === 'pendiente')
+      .sort((a, b) => a.diffDias - b.diffDias)[0];
+    const hace7Sanidad = new Date(`${hoySanidad}T00:00:00`);
+    hace7Sanidad.setDate(hace7Sanidad.getDate() - 7);
+    const bajas7Sanidad = loteActivo ? listBajas
+      .filter(b => b.loteId === loteActivo.id && b.fecha && new Date(`${b.fecha}T00:00:00`) >= hace7Sanidad)
+      .reduce((sum, b) => sum + (Number(b.cantidad) || 0), 0) : 0;
+    const sinStockSanidad = tareasLoteSanidad.filter(t => (t.estado || 'pendiente') === 'pendiente' && t.productoMedicoId && (inventarioMedico.find(m => m.id === t.productoMedicoId)?.stock || 0) <= 0).length;
+    const vencidasSanidad = tareasLoteSanidad.filter(t => t.vencida).length;
+    const hoyPendientesSanidad = tareasLoteSanidad.filter(t => t.diffDias === 0 && (t.estado || 'pendiente') === 'pendiente').length;
+    const riesgoScoreSanidad = (vencidasSanidad * 3) + hoyPendientesSanidad + (bajas7Sanidad * 4) + (sinStockSanidad * 2);
+    const riesgoNivelSanidad = riesgoScoreSanidad >= 6 ? 'alto' : riesgoScoreSanidad >= 3 ? 'medio' : 'bajo';
+    const historialSanidadLote = loteActivo ? [
+      ...tareasLoteSanidad.filter(t => t.estado === 'hecho').map(t => ({ id: `t_${t.id}`, fecha: t.completadoEn || t.fechaObjetivo, tipo: 'Protocolo', texto: t.tarea, detalle: t.observacion || t.producto || '' })),
+      ...listUsosMedicos.filter(u => u.loteId === loteActivo.id).map(u => ({ id: `u_${u.id}`, fecha: u.fecha, tipo: 'Aplicación', texto: u.nombre, detalle: `${u.cantidad} ${u.unidad} · ${formatearMoneda(u.costo || 0)}` }))
+    ].filter(i => i.fecha).sort((a, b) => String(b.fecha).localeCompare(String(a.fecha))).slice(0, 6) : [];
+    const irACalendarioDesdeCorral = () => {
+      setVista('calendario');
+      if (proximaTareaSanidad?.fechaObjetivo) {
+        setCalendarioDiaSeleccionado(proximaTareaSanidad.fechaObjetivo);
+        const d = new Date(`${proximaTareaSanidad.fechaObjetivo}T00:00:00`);
+        setCalendarioCursor({ year: d.getFullYear(), month: d.getMonth() });
+      }
+    };
 
     return (
       <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
@@ -3787,21 +4332,51 @@ return (
               {tabActiva === 'sanidad' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-in fade-in duration-300 text-xs">
                   <div className="space-y-6">
-                    <div className="bg-emerald-50/40 p-5 rounded-2xl border border-emerald-100 shadow-sm space-y-4">
-                      <div className="flex flex-col gap-1">
-                        <h3 className="font-extrabold text-base text-emerald-950 flex items-center gap-1.5"><ClipboardList size={20} className="text-emerald-600" /> Agenda de Control Sanitario</h3>
-                        <p className="text-slate-500 font-medium mt-0.5">La agenda completa y los protocolos se administran desde Control Sanitario.</p>
+                    <div className={`p-5 rounded-2xl border shadow-sm space-y-4 ${riesgoNivelSanidad === 'alto' ? 'bg-rose-50/40 border-rose-100' : riesgoNivelSanidad === 'medio' ? 'bg-amber-50/40 border-amber-100' : 'bg-emerald-50/40 border-emerald-100'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-1.5"><HeartPulse size={20} className="text-rose-600" /> Estado Sanitario</h3>
+                        <span className={`text-[9px] font-black uppercase tracking-wider border px-2.5 py-1 rounded-lg ${riesgoNivelSanidad === 'alto' ? 'bg-rose-100 text-rose-700 border-rose-200' : riesgoNivelSanidad === 'medio' ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>Riesgo {riesgoNivelSanidad}</span>
                       </div>
+
+                      {proximaTareaSanidad ? (
+                        <div className="bg-white/70 border border-slate-100 rounded-xl p-4">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Próxima Tarea Programada</p>
+                          <p className="font-extrabold text-slate-800 text-sm">{proximaTareaSanidad.tarea}</p>
+                          <p className="text-xs text-slate-500 mt-1 font-medium">{proximaTareaSanidad.rango || `Día ${proximaTareaSanidad.dia}`} · {proximaTareaSanidad.fechaObjetivo}</p>
+                        </div>
+                      ) : (
+                        <div className="bg-white/70 border border-slate-100 rounded-xl p-4 text-emerald-700 font-bold text-xs flex items-center gap-1.5">
+                          <CheckCircle size={14} /> Sin tareas sanitarias pendientes.
+                        </div>
+                      )}
+
                       <div className="flex flex-col sm:flex-row gap-2.5 font-bold">
-                        <button type="button" onClick={() => { setVista('controlSanitario'); setSanidadTab('agenda'); }} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl transition-colors text-center shadow-md shadow-emerald-600/10">
-                          Abrir Agenda Clínica
+                        <button type="button" onClick={irACalendarioDesdeCorral} className="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-xl transition-colors text-center shadow-md">
+                          Ver en Calendario
                         </button>
                         {listTareasSanidad.filter(t => t.loteId === loteActivo.id).length === 0 && (
-                          <button type="button" onClick={() => handleGenerarProtocoloLote(loteActivo)} className="flex-1 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 py-2.5 rounded-xl transition-colors">
+                          <button type="button" onClick={() => handleGenerarProtocoloLote(loteActivo)} className="flex-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 py-2.5 rounded-xl transition-colors">
                             Generar Protocolo Sanitario
                           </button>
                         )}
                       </div>
+
+                      {historialSanidadLote.length > 0 && (
+                        <div className="border-t border-slate-200/60 pt-3">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Historial Sanitario Reciente</p>
+                          <div className="space-y-1.5 max-h-40 overflow-y-auto scrollbar-thin pr-1">
+                            {historialSanidadLote.map(item => (
+                              <div key={item.id} className="grid grid-cols-[70px_1fr] gap-3 hover:bg-white/60 p-1.5 rounded-lg transition-colors">
+                                <span className="font-bold text-slate-400 text-[11px]">{String(item.fecha).substring(5)}</span>
+                                <div className="min-w-0">
+                                  <p className="font-bold text-slate-700 text-[11px] truncate leading-snug">{item.tipo}: {item.texto}</p>
+                                  {item.detalle && <p className="text-[10px] text-slate-400 truncate mt-0.5">{item.detalle}</p>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
@@ -4563,713 +5138,6 @@ return (
       </div>
     );
   };
-  const renderControlSanitario = () => {
-    const hoy = todayIso();
-    const lotesActivos = listLotes.filter(l => l.estado === 'Activo');
-    const getProductoMedicoLigado = (item) => {
-      if (!item) return null;
-      const directo = listCatalogoMedico.find(m => m.id === item.productoMedicoId);
-      if (directo) return inventarioMedico.find(m => m.id === directo.id) || directo;
-
-      const texto = `${item.producto || ''} ${item.tarea || ''}`.toLowerCase();
-      const candidato = listCatalogoMedico.find(m => {
-        const nombre = m.nombre.toLowerCase();
-        return texto.includes(nombre) ||
-          nombre.split(/[ /]+/).filter(Boolean).some(parte => parte.length > 5 && texto.includes(parte));
-      });
-      return candidato ? (inventarioMedico.find(m => m.id === candidato.id) || candidato) : null;
-    };
-
-    const tareasEnriquecidas = listTareasSanidad.map(tarea => {
-      const lote = listLotes.find(l => l.id === tarea.loteId);
-      const corral = listCorrales.find(c => c.id === lote?.corralId);
-      const fechaObjetivo = tarea.fechaObjetivo || (lote?.fechaIngreso ? addDaysToIsoDate(lote.fechaIngreso, Number(tarea.dia) || 0) : '');
-      const diffDias = fechaObjetivo ? Math.ceil((new Date(`${fechaObjetivo}T00:00:00`) - new Date(`${hoy}T00:00:00`)) / 86_400_000) : 9999;
-      const productoMedico = getProductoMedicoLigado(tarea);
-      return {
-        ...tarea,
-        lote,
-        corral,
-        productoMedico,
-        productoMedicoId: tarea.productoMedicoId || productoMedico?.id || '',
-        fechaObjetivo,
-        diffDias,
-        estado: tarea.estado || 'pendiente',
-        vencida: (tarea.estado || 'pendiente') === 'pendiente' && diffDias < 0
-      };
-    }).filter(t => t.lote?.estado === 'Activo');
-
-    const agendaFiltrada = tareasEnriquecidas
-      .filter(t => {
-        if (sanidadFiltro === 'vencidas') return t.vencida;
-        if (sanidadFiltro === 'hoy') return t.diffDias === 0 || t.vencida;
-        if (sanidadFiltro === 'semana') return t.diffDias >= 0 && t.diffDias <= 7;
-        return true;
-      })
-      .sort((a, b) => a.diffDias - b.diffDias || (Number(a.dia) || 0) - (Number(b.dia) || 0));
-
-    const getEtiquetaFechaAgenda = (tarea) => {
-      if (tarea.vencida) return `Vencida · ${tarea.fechaObjetivo || 'Sin fecha'}`;
-      if (tarea.diffDias === 0) return 'Hoy';
-      if (tarea.diffDias === 1) return 'Mañana';
-      if (tarea.diffDias > 1 && tarea.diffDias <= 7) return `En ${tarea.diffDias} días`;
-      return tarea.fechaObjetivo || 'Sin fecha';
-    };
-
-    const gruposAgenda = agendaFiltrada.reduce((acc, tarea) => {
-      const key = getEtiquetaFechaAgenda(tarea);
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(tarea);
-      return acc;
-    }, {});
-
-    const resumenAgenda = {
-      vencidas: tareasEnriquecidas.filter(t => t.vencida).length,
-      hoy: tareasEnriquecidas.filter(t => t.diffDias === 0 && t.estado === 'pendiente').length,
-      semana: tareasEnriquecidas.filter(t => t.diffDias >= 0 && t.diffDias <= 7 && t.estado === 'pendiente').length,
-      pendientes: tareasEnriquecidas.filter(t => t.estado === 'pendiente').length
-    };
-    const alertasMedicas = inventarioMedico.filter(item => {
-      const vencimientoCercano = item.proximoVencimiento && item.proximoVencimiento.diffDias <= (Number(item.diasAlertaVencimiento) || 30);
-      return item.bajoStock || vencimientoCercano;
-    });
-    const valorBodegaMedica = inventarioMedico.reduce((sum, item) => sum + (item.valorStock || 0), 0);
-    const tareasPendientesParaAplicacion = tareasEnriquecidas.filter(t => t.estado === 'pendiente');
-    const tareasProximasConMedicina = tareasPendientesParaAplicacion.filter(t => t.productoMedico && t.diffDias >= 0 && t.diffDias <= 14);
-    const ordenCompraMedicaSugerida = Object.values(tareasProximasConMedicina.reduce((acc, tarea) => {
-      const med = tarea.productoMedico;
-      if (!acc[med.id]) {
-        acc[med.id] = {
-          ...med,
-          tareas: [],
-          requeridoOperativo: 0,
-          faltanteOperativo: 0
-        };
-      }
-      acc[med.id].tareas.push(tarea);
-      acc[med.id].requeridoOperativo += 1;
-      acc[med.id].faltanteOperativo = Math.max(0, acc[med.id].requeridoOperativo - (Number(med.stock) || 0));
-      return acc;
-    }, {})).filter(item => item.faltanteOperativo > 0 || item.bajoStock);
-
-    const getRiesgoSanitarioLote = (lote) => {
-      const tareas = tareasEnriquecidas.filter(t => t.loteId === lote.id);
-      const hace7 = new Date(`${hoy}T00:00:00`);
-      hace7.setDate(hace7.getDate() - 7);
-      const bajas7 = listBajas
-        .filter(b => b.loteId === lote.id && b.fecha && new Date(`${b.fecha}T00:00:00`) >= hace7)
-        .reduce((sum, b) => sum + (Number(b.cantidad) || 0), 0);
-      const sinStock = tareas.filter(t => t.estado === 'pendiente' && t.productoMedico && (Number(t.productoMedico.stock) || 0) <= 0).length;
-      const vencidas = tareas.filter(t => t.vencida).length;
-      const hoyPendientes = tareas.filter(t => t.diffDias === 0 && t.estado === 'pendiente').length;
-      const score = (vencidas * 3) + hoyPendientes + (bajas7 * 4) + (sinStock * 2);
-      const nivel = score >= 6 ? 'alto' : score >= 3 ? 'medio' : 'bajo';
-      return { score, nivel, vencidas, hoyPendientes, bajas7, sinStock };
-    };
-
-    const getHistorialSanitarioLote = (lote) => {
-      const tareasHechas = tareasEnriquecidas
-        .filter(t => t.loteId === lote.id && t.estado === 'hecho')
-        .map(t => ({ id: `t_${t.id}`, fecha: t.completadoEn || t.fechaObjetivo, tipo: 'Protocolo', texto: t.tarea, detalle: t.observacion || t.producto || '' }));
-      const aplicaciones = listUsosMedicos
-        .filter(u => u.loteId === lote.id)
-        .map(u => ({ id: `u_${u.id}`, fecha: u.fecha, tipo: 'Aplicación', texto: u.nombre, detalle: `${u.cantidad} ${u.unidad} · ${formatearMoneda(u.costo || 0)}` }));
-      const bajas = listBajas
-        .filter(b => b.loteId === lote.id)
-        .map(b => ({ id: `b_${b.id}`, fecha: b.fecha, tipo: 'Baja', texto: b.causa, detalle: `${b.cantidad} animales` }));
-      return [...tareasHechas, ...aplicaciones, ...bajas]
-        .filter(i => i.fecha)
-        .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
-        .slice(0, 6);
-    };
-
-    const renderTareaAgenda = (tarea) => {
-      const abierta = agendaDetalleAbierto === tarea.id;
-      const estadoClass = tarea.estado === 'hecho'
-        ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-        : tarea.estado === 'omitido'
-        ? 'bg-slate-100 text-slate-500 border-slate-200'
-        : tarea.vencida
-        ? 'bg-rose-50 text-rose-700 border-rose-100 animate-pulse'
-        : 'bg-amber-50 text-amber-700 border-amber-100';
-
-      return (
-        <div key={tarea.id} className="border border-slate-100 rounded-2xl bg-white overflow-hidden shadow-[0_4px_20px_rgb(0,0,0,0.008)] hover:border-slate-200 transition-all duration-200">
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 p-5 items-center">
-            <button type="button" onClick={() => setAgendaDetalleAbierto(abierta ? null : tarea.id)} className="text-left min-w-0">
-              <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                <span className="text-xs font-black text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg">{tarea.corral?.nombre || 'Corral'}</span>
-                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{tarea.rango || `Día ${tarea.dia}`}</span>
-                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${estadoClass}`}>
-                  {tarea.estado === 'pendiente' && tarea.vencida ? 'Vencida' : tarea.estado}
-                </span>
-              </div>
-              <h4 className="font-extrabold text-slate-800 text-base leading-snug">{tarea.tarea}</h4>
-              <p className="text-xs text-slate-500 mt-1 font-medium flex items-center gap-1">
-                <Archive size={12} className="text-slate-400" />
-                {tarea.productoMedico ? `${tarea.productoMedico.nombre} (Stock: ${Number(tarea.productoMedico.stock || 0).toFixed(1)} ${tarea.productoMedico.unidad})` : tarea.producto || 'Sin insumo ligado'}
-              </p>
-            </button>
-            <div className="flex items-center gap-2 justify-end shrink-0">
-              {tarea.estado !== 'hecho' ? (
-                <button type="button" onClick={() => handleActualizarTareaSanidad(tarea.id, { estado: 'hecho' })} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-md shadow-emerald-600/10 transition-colors">
-                  Completar
-                </button>
-              ) : (
-                <button type="button" onClick={() => handleActualizarTareaSanidad(tarea.id, { estado: 'pendiente' })} className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-4 py-2 rounded-xl text-xs transition-colors">
-                  Reabrir
-                </button>
-              )}
-              <button type="button" onClick={() => setAgendaDetalleAbierto(abierta ? null : tarea.id)} className="border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold px-4 py-2 rounded-xl text-xs bg-white shadow-sm transition-colors">
-                Detalle
-              </button>
-            </div>
-          </div>
-
-          {abierta && (
-            <div className="border-t border-slate-100 bg-slate-50/50 p-5 grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-5">
-              <div className="space-y-2.5 text-xs text-slate-600 font-medium">
-                {tarea.producto && <p><strong>Producto Recomendado:</strong> {tarea.producto}</p>}
-                {tarea.productoMedico && <p className="text-indigo-600 font-semibold">Insumo en Farmacia: {tarea.productoMedico.nombre} · stock {Number(tarea.productoMedico.stock || 0).toFixed(2)} {tarea.productoMedico.unidad}</p>}
-                {tarea.condicion && <p><strong>Indicación Clínica:</strong> {tarea.condicion}</p>}
-                {tarea.nota && <p className="text-slate-400 bg-white p-2.5 rounded-lg border border-slate-200/60 leading-relaxed font-normal">{tarea.nota}</p>}
-              </div>
-              <div className="space-y-2.5">
-                <textarea
-                  value={tarea.observacion || ''}
-                  onChange={(e) => handleActualizarTareaSanidad(tarea.id, { observacion: e.target.value })}
-                  placeholder="Escribe observaciones sanitarias o de dosis..."
-                  className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-xs min-h-[80px] bg-white transition-all shadow-inner"
-                />
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <button type="button" onClick={() => handleActualizarTareaSanidad(tarea.id, { estado: 'omitido' })} className="bg-slate-800 hover:bg-slate-900 text-white font-bold py-2 rounded-xl transition-colors">
-                    Omitir Paso
-                  </button>
-                  <button type="button" onClick={() => handleActualizarTareaSanidad(tarea.id, { estado: 'pendiente' })} className="bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 font-bold py-2 rounded-xl shadow-sm transition-colors">
-                    Pendiente
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    return (
-      <div className="p-4 sm:p-6 lg:p-8 space-y-8 max-w-7xl mx-auto animate-in fade-in duration-500">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-5">
-          <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
-              <HeartPulse size={28} className="text-rose-600 mr-3 filter drop-shadow-[0_0_8px_rgba(239,68,68,0.25)]" /> Control Sanitario
-            </h2>
-            <p className="text-slate-500 text-sm mt-1.5">Agenda médica, farmacia interna y protocolos sanitarios de los corrales activos.</p>
-          </div>
-          <div className="flex flex-wrap gap-2 text-center text-xs font-black uppercase tracking-wider">
-            <div className="bg-rose-50 border border-rose-100 rounded-xl px-3.5 py-2 shrink-0"><p className="text-lg text-rose-700 leading-none mb-1">{resumenAgenda.vencidas}</p><p className="text-[9px] text-rose-500">Vencidas</p></div>
-            <div className="bg-amber-50 border border-amber-100 rounded-xl px-3.5 py-2 shrink-0"><p className="text-lg text-amber-700 leading-none mb-1">{resumenAgenda.hoy}</p><p className="text-[9px] text-amber-500">Hoy</p></div>
-            <div className="bg-blue-50 border border-blue-100 rounded-xl px-3.5 py-2 shrink-0"><p className="text-lg text-blue-700 leading-none mb-1">{resumenAgenda.semana}</p><p className="text-[9px] text-blue-500">Semana</p></div>
-            <div className="bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 shrink-0"><p className="text-lg text-slate-700 leading-none mb-1">{resumenAgenda.pendientes}</p><p className="text-[9px] text-slate-500">Pend.</p></div>
-            <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-3.5 py-2 shrink-0"><p className="text-lg text-indigo-700 leading-none mb-1">{alertasMedicas.length}</p><p className="text-[9px] text-indigo-500">Alertas</p></div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] overflow-hidden">
-          <div className="flex overflow-x-auto border-b border-slate-100 bg-slate-50">
-            {[
-              { id: 'agenda', icon: Calendar, label: 'Agenda Médica' },
-              { id: 'corrales', icon: Box, label: 'Corrales Clínicos' },
-              { id: 'bodegaMedica', icon: Archive, label: 'Farmacia & Bodega' },
-              { id: 'protocolos', icon: ClipboardList, label: 'Protocolos Sanitarios' },
-            ].map(t => (
-              <button key={t.id} onClick={() => setSanidadTab(t.id)} className={`flex items-center px-6 py-4 font-bold text-sm transition-colors border-b-2 shrink-0 ${sanidadTab === t.id ? 'border-rose-500 text-rose-700 bg-white shadow-[inset_0_-1px_0_white]' : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}>
-                {React.createElement(t.icon, { size: 17, className: 'mr-2' })} {t.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-6">
-            {sanidadTab === 'agenda' && (
-              <div className="space-y-6">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-50 pb-4">
-                  <div>
-                    <h3 className="font-extrabold text-slate-800 text-lg">Agenda de Actividades Sanitarias</h3>
-                    <p className="text-xs text-slate-500 mt-1">Monitorea las tareas programadas según la edad o llegada del lote. Haz clic en Detalle para más notas.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200/50">
-                    {[
-                      ['hoy', 'Hoy / Vencidas'],
-                      ['semana', 'Semana'],
-                      ['vencidas', 'Solo Vencidas'],
-                      ['todas', 'Ver Todas'],
-                    ].map(([id, label]) => (
-                      <button key={id} onClick={() => setSanidadFiltro(id)} className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all duration-150 ${sanidadFiltro === id ? 'bg-white text-slate-900 shadow-sm border border-slate-200/30' : 'text-slate-400 hover:text-slate-600'}`}>{label}</button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-6">
-                  {Object.entries(gruposAgenda).map(([grupo, tareas]) => (
-                    <div key={grupo} className="space-y-3">
-                      <div className="flex items-center gap-3">
-                        <h4 className={`text-xs font-black uppercase tracking-widest ${grupo.startsWith('Vencida') ? 'text-rose-600' : 'text-slate-500'}`}>{grupo}</h4>
-                        <div className="h-px flex-1 bg-slate-100" />
-                        <span className="text-[10px] font-bold text-slate-400 uppercase bg-slate-100 px-2 py-0.5 rounded">{tareas.length} tareas</span>
-                      </div>
-                      <div className="space-y-2.5">
-                        {tareas.map(renderTareaAgenda)}
-                      </div>
-                    </div>
-                  ))}
-                  {agendaFiltrada.length === 0 && (
-                    <div className="p-12 text-center text-slate-400 italic border border-dashed border-slate-200 rounded-2xl bg-slate-50/50 max-w-lg mx-auto">
-                      <Calendar size={32} className="mx-auto text-slate-300 mb-3" />
-                      No hay tareas programadas para este rango. Todo está al día.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {sanidadTab === 'corrales' && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {lotesActivos.map(lote => {
-                  const corral = listCorrales.find(c => c.id === lote.corralId);
-                  const tareas = tareasEnriquecidas.filter(t => t.loteId === lote.id);
-                  const pendientes = tareas.filter(t => t.estado === 'pendiente').length;
-                  const vencidas = tareas.filter(t => t.vencida).length;
-                  const proxima = tareas.filter(t => t.estado === 'pendiente').sort((a, b) => a.diffDias - b.diffDias)[0];
-                  const riesgo = getRiesgoSanitarioLote(lote);
-                  const historial = getHistorialSanitarioLote(lote);
-                  const riesgoClass = riesgo.nivel === 'alto'
-                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                    : riesgo.nivel === 'medio'
-                    ? 'bg-amber-50 text-amber-700 border-amber-200'
-                    : 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                  return (
-                    <div key={lote.id} className="border border-slate-100 rounded-2xl bg-white p-5 shadow-[0_4px_25px_rgb(0,0,0,0.008)] hover:border-slate-200 transition-all flex flex-col justify-between">
-                      <div>
-                        <div className="flex justify-between items-start mb-4">
-                          <div>
-                            <h3 className="font-extrabold text-slate-800 text-lg leading-tight">{corral?.nombre || 'Corral'}</h3>
-                            <p className="text-xs text-slate-400 mt-1 font-medium">{lote.cantidad} iniciales • fecha ingreso: {lote.fechaIngreso}</p>
-                          </div>
-                          <div className="flex flex-col items-end gap-2">
-                            <span className={`text-[9px] font-black uppercase tracking-wider border px-2.5 py-1 rounded-lg ${riesgoClass}`}>Riesgo {riesgo.nivel}</span>
-                            <button type="button" onClick={() => handleGenerarProtocoloLote(lote)} className="text-[10px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-100 px-2.5 py-1 rounded-lg transition-colors">
-                              Re-Generar
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-4 gap-2 mb-4 text-center text-xs font-black">
-                          <div className="bg-amber-50 border border-amber-100/50 rounded-xl p-2.5"><p className="text-base text-amber-700 leading-tight">{pendientes}</p><p className="text-[9px] font-bold uppercase text-amber-500 mt-0.5">Pend.</p></div>
-                          <div className="bg-rose-50 border border-rose-100/50 rounded-xl p-2.5"><p className="text-base text-rose-700 leading-tight">{vencidas}</p><p className="text-[9px] font-bold uppercase text-rose-500 mt-0.5">Venc.</p></div>
-                          <div className="bg-emerald-50 border border-emerald-100/50 rounded-xl p-2.5"><p className="text-base text-emerald-700 leading-tight">{tareas.filter(t => t.estado === 'hecho').length}</p><p className="text-[9px] font-bold uppercase text-emerald-500 mt-0.5">Hechas</p></div>
-                          <div className="bg-slate-50 border border-slate-100 rounded-xl p-2.5"><p className="text-base text-slate-700 leading-tight">{riesgo.score}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Score</p></div>
-                        </div>
-
-                        {riesgo.nivel !== 'bajo' && (
-                          <div className="bg-amber-50/50 border border-amber-200/50 rounded-xl p-3 mb-4 text-xs text-amber-800 font-bold leading-relaxed shadow-sm">
-                            ⚠️ Alertas: {[
-                              riesgo.vencidas > 0 ? `${riesgo.vencidas} vencidas` : '',
-                              riesgo.hoyPendientes > 0 ? `${riesgo.hoyPendientes} hoy` : '',
-                              riesgo.bajas7 > 0 ? `${riesgo.bajas7} bajas recientes` : '',
-                              riesgo.obsCriticas > 0 ? `${riesgo.obsCriticas} obs. críticas` : '',
-                              riesgo.sinStock > 0 ? `${riesgo.sinStock} sin stock` : ''
-                            ].filter(Boolean).join(' · ')}
-                          </div>
-                        )}
-
-                        {proxima ? (
-                          <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 mb-4 shadow-inner">
-                            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Próxima Tarea Programada</p>
-                            <p className="font-extrabold text-slate-800 text-sm">{proxima.tarea}</p>
-                            <p className="text-xs text-slate-500 mt-1 font-medium">{proxima.rango} · {proxima.fechaObjetivo}</p>
-                          </div>
-                        ) : (
-                          <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 mb-4 text-emerald-800 font-bold text-xs flex items-center justify-center gap-1.5 shadow-inner">
-                            <CheckCircle size={14} /> Sin tareas sanitarias pendientes.
-                          </div>
-                        )}
-                      </div>
-
-                      {historial.length > 0 && (
-                        <div className="mt-4 border-t border-slate-100 pt-4">
-                          <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2.5">Historial Sanitario Reciente</p>
-                          <div className="space-y-2 text-xs max-h-36 overflow-y-auto scrollbar-thin pr-1">
-                            {historial.map(item => (
-                              <div key={item.id} className="grid grid-cols-[70px_1fr] gap-3 hover:bg-slate-50 p-1.5 rounded-lg transition-colors">
-                                <span className="font-bold text-slate-400">{item.fecha.substring(5)}</span>
-                                <div className="min-w-0">
-                                  <p className="font-bold text-slate-700 truncate leading-snug">{item.tipo}: {item.texto}</p>
-                                  {item.detalle && <p className="text-[10px] text-slate-400 truncate mt-0.5">{item.detalle}</p>}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {lotesActivos.length === 0 && (
-                  <div className="lg:col-span-2 p-12 text-center text-slate-400 italic border border-dashed border-slate-200 rounded-2xl bg-slate-50/50 max-w-lg mx-auto">
-                    <Box size={32} className="mx-auto text-slate-300 mb-3" />
-                    No hay corrales activos registrados en este momento.
-                  </div>
-                )}
-              </div>
-            )}
-
-            {sanidadTab === 'bodegaMedica' && (
-              <div className="space-y-8">
-                {/* METRICS GRID */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500 mb-1 leading-none">Valor en Farmacia</p>
-                    <p className="text-2xl font-black text-indigo-900">{formatearMoneda(valorBodegaMedica)}</p>
-                  </div>
-                  <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-rose-500 mb-1 leading-none">Alertas de Stock</p>
-                    <p className="text-2xl font-black text-rose-700">{alertasMedicas.length}</p>
-                  </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1 leading-none">Medicamentos en Catálogo</p>
-                    <p className="text-2xl font-black text-slate-800">{listCatalogoMedico.length}</p>
-                  </div>
-                  <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 mb-1 leading-none">Aplicaciones Realizadas</p>
-                    <p className="text-2xl font-black text-emerald-700">{listUsosMedicos.length}</p>
-                  </div>
-                </div>
-
-                {/* COMPRA MÈDICA SUGERIDA */}
-                {ordenCompraMedicaSugerida.length > 0 && (
-                  <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-2xl p-5 shadow-sm">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-                      <h3 className="font-extrabold text-fuchsia-900 text-sm flex items-center gap-1.5"><ShoppingCart size={16} /> Compra Sugerida de Fármacos</h3>
-                      <span className="text-[9px] font-bold text-fuchsia-600 bg-white border border-fuchsia-200/60 px-2.5 py-1 rounded-lg uppercase tracking-wider">Próximos 14 días</span>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {ordenCompraMedicaSugerida.map(item => (
-                        <div key={item.id} className="bg-white border border-fuchsia-100 rounded-xl p-4 flex justify-between items-center shadow-sm">
-                          <div>
-                            <p className="font-extrabold text-slate-800 text-sm">{item.nombre}</p>
-                            <p className="text-xs text-slate-500 mt-1">{item.tareas.length} tareas programadas • stock: {Number(item.stock || 0).toFixed(1)} {item.unidad}</p>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-lg font-black text-fuchsia-700 bg-fuchsia-100 px-3 py-1 rounded-xl">{Math.ceil(item.faltanteOperativo)} {item.unidad}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* ALERTAS DE FARMACIA */}
-                {alertasMedicas.length > 0 && (
-                  <div className="bg-rose-50/50 border border-rose-100 rounded-2xl p-5 shadow-sm">
-                    <h3 className="font-extrabold text-rose-900 text-sm mb-4 flex items-center gap-1.5"><AlertTriangle size={16} /> Medicamentos Vencidos o con Stock Crítico</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {alertasMedicas.map(item => (
-                        <div key={item.id} className="bg-white border border-rose-100 rounded-xl p-4 shadow-sm flex flex-col justify-between">
-                          <div>
-                            <p className="font-bold text-slate-800 text-sm leading-snug">{item.nombre}</p>
-                            <p className="text-xs text-slate-500 mt-1 font-semibold flex items-center gap-1">
-                              Stock: <span className={`font-bold ${item.bajoStock ? 'text-rose-600' : 'text-slate-700'}`}>{item.stock.toFixed(1)} {item.unidad}</span>
-                              {item.bajoStock && <span className="text-[10px] text-white bg-rose-500 px-1.5 py-0.5 rounded-md leading-none uppercase">Crítico</span>}
-                            </p>
-                          </div>
-                          {item.proximoVencimiento && (
-                            <p className="text-[10px] text-rose-600 font-black uppercase tracking-wider bg-rose-50 p-2 border border-rose-100 rounded-lg mt-3 leading-none text-center">
-                              Vence: {item.proximoVencimiento.vencimiento} ({item.proximoVencimiento.diffDias} días)
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* FORMS GRID */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                  {/* COMPRA */}
-                  <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
-                    <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><ShoppingCart size={18} className="text-indigo-600" /> Registrar Compra Médica</h3>
-                    <form onSubmit={handleComprarMedicina} className="space-y-4 text-xs font-semibold">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha de Compra</label>
-                          <input type="date" name="fecha" required defaultValue={hoy} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50" />
-                        </div>
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Medicamento a Ingresar</label>
-                          <select name="productoId" required value={medicinaSeleccionadaId} onChange={(e) => setMedicinaSeleccionadaId(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-white font-bold text-slate-700">
-                            {listCatalogoMedico.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad</label>
-                          <input type="number" name="cantidad" step="0.01" min="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50 font-bold" />
-                        </div>
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Costo Total (Q)</label>
-                          <input type="number" name="costoTotal" step="0.01" min="0" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50 font-bold" />
-                        </div>
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha Vencimiento</label>
-                          <input type="date" name="vencimiento" className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50" />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <input name="lote" placeholder="Lote / Serie del fármaco (opcional)" className="p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50" />
-                        <input name="proveedor" placeholder="Droguería / Veterinaria (opcional)" className="p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50" />
-                      </div>
-                      <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-3 rounded-xl transition-colors shadow-lg shadow-indigo-600/10 mt-2">Ingresar Fármaco</button>
-                    </form>
-                  </div>
-
-                  {/* APLICACIÓN */}
-                  <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
-                    <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Syringe size={18} className="text-rose-600" /> Aplicar Tratamiento Médico</h3>
-                    <form onSubmit={handleAplicarMedicina} className="space-y-4 text-xs font-semibold">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha de Aplicación</label>
-                          <input type="date" name="fecha" required defaultValue={hoy} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 bg-slate-50/50" />
-                        </div>
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Lote / Corral Destino</label>
-                          <select name="loteId" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 bg-white font-bold text-slate-700">
-                            <option value="">Selecciona Corral...</option>
-                            {lotesActivos.map(lote => {
-                              const corral = listCorrales.find(c => c.id === lote.corralId);
-                              return <option key={lote.id} value={lote.id}>{corral?.nombre || 'Corral'} • ingreso: {lote.fechaIngreso}</option>;
-                            })}
-                          </select>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fármaco de Farmacia</label>
-                          <select name="productoId" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-white font-bold text-slate-700">
-                            {inventarioMedico.map(m => <option key={m.id} value={m.id}>{m.nombre} (Disponible: {m.stock.toFixed(1)} {m.unidad})</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad a Dosificar</label>
-                          <input type="number" name="cantidad" step="0.01" min="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-slate-50/50 font-bold" />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Ligar a Tarea de Agenda (opcional)</label>
-                        <select name="tareaId" className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-white font-semibold text-slate-600 text-xs">
-                          <option value="">Sin ligar a tarea</option>
-                          {tareasPendientesParaAplicacion.map(t => (
-                            <option key={t.id} value={t.id}>{t.corral?.nombre} · {t.fechaObjetivo} · {t.tarea}{t.productoMedico ? ` · sugerido: ${t.productoMedico.nombre}` : ''}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Diagnóstico / Comentarios</label>
-                        <textarea name="observacion" placeholder="Escribe síntomas, diagnósticos, observaciones..." className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500 bg-slate-50/50 min-h-[80px]" />
-                      </div>
-                      <button type="submit" className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-3 rounded-xl transition-colors shadow-lg shadow-rose-600/10 mt-2">Aplicar y Descontar Stock</button>
-                    </form>
-                  </div>
-                </div>
-
-                {/* INVENTARIO COMPLETO TABLE */}
-                <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_4px_25px_rgb(0,0,0,0.005)] overflow-hidden">
-                  <div className="p-5 border-b border-slate-50 bg-slate-900 text-white flex items-center justify-between">
-                    <h3 className="font-extrabold text-base">Inventario de Medicinas en Bodega</h3>
-                    <span className="text-[10px] text-emerald-400/90 font-bold uppercase tracking-wider bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">Farmacia al Día</span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                      <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider">
-                        <tr>
-                          <th className="p-4 pl-6">Medicamento</th>
-                          <th className="p-4 text-center">Categoría</th>
-                          <th className="p-4 text-center">Stock Físico</th>
-                          <th className="p-4 text-right">Costo Promedio</th>
-                          <th className="p-4 text-right">Valor Stock</th>
-                          <th className="p-4 pr-6">Lote Vencimiento</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-slate-700">
-                        {inventarioMedico.map(item => (
-                          <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
-                            <td className="p-4 pl-6">
-                              <p className="font-bold text-slate-800">{item.nombre}</p>
-                              <p className="text-[10px] text-slate-400 font-semibold uppercase mt-0.5">Mínimo Crítico: {item.stockMinimo} {item.unidad}</p>
-                            </td>
-                            <td className="p-4 text-center text-xs font-bold text-slate-500">{item.categoria}</td>
-                            <td className="p-4 text-center">
-                              <span className={`px-2.5 py-1 rounded-full font-black text-xs border ${item.bajoStock ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
-                                {item.stock.toFixed(1)} {item.unidad}
-                              </span>
-                            </td>
-                            <td className="p-4 text-right font-semibold text-slate-600">{formatearMoneda(item.costoPromedio)}</td>
-                            <td className="p-4 text-right font-black text-indigo-600">{formatearMoneda(item.valorStock)}</td>
-                            <td className="p-4 text-xs font-medium text-slate-500 pr-6">
-                              {item.proximoVencimiento ? `${item.proximoVencimiento.vencimiento} (${item.proximoVencimiento.diffDias} días)` : 'Sin lote/vence registrado'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  {/* CATÀLOGO FORM */}
-                  <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
-                    <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Plus size={18} className="text-indigo-600" /> Catálogo Farmacéutico</h3>
-                    <form onSubmit={handleAgregarMedicamentoCatalogo} className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 bg-slate-50 p-4 border border-slate-100 rounded-xl">
-                      <input name="nombre" required placeholder="Nombre fármaco" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
-                      <input name="categoria" placeholder="Categoría (Ej. Hidratante)" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
-                      <input name="unidad" placeholder="Unidad (Ej. frasco, sobre)" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
-                      <input type="number" name="stockMinimo" step="0.01" placeholder="Stock mínimo" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white" />
-                      <input type="number" name="diasAlertaVencimiento" placeholder="Alerta vencimiento (Días)" className="p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-xs bg-white col-span-1 sm:col-span-2" />
-                      <button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl px-4 py-2.5 text-xs col-span-1 sm:col-span-2">Agregar Producto</button>
-                    </form>
-                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1 scrollbar-thin">
-                      {listCatalogoMedico.map(m => (
-                        <div key={m.id} className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-100 rounded-xl text-xs">
-                          <div>
-                            <p className="font-bold text-slate-800">{m.nombre}</p>
-                            <p className="text-[10px] text-slate-400 mt-0.5 font-medium">{m.categoria} • {m.unidad} • min: {m.stockMinimo}</p>
-                          </div>
-                          <button type="button" onClick={() => handleEliminarMedicamentoCatalogo(m.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-all"><Trash2 size={15} /></button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* MOVIMIENTOS */}
-                  <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
-                    <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><CheckCircle size={18} className="text-rose-600" /> Bitácora Reciente</h3>
-                    <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1 scrollbar-thin">
-                      {[...listComprasMedicas.map(c => ({ ...c, movimiento: 'entrada' })), ...listUsosMedicos.map(u => ({ ...u, movimiento: 'salida' }))]
-                        .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')))
-                        .slice(0, 30)
-                        .map(mov => {
-                          const lote = listLotes.find(l => l.id === mov.loteId);
-                          const corral = listCorrales.find(c => c.id === lote?.corralId);
-                          return (
-                            <div key={`${mov.movimiento}_${mov.id}`} className="flex justify-between items-center p-3.5 bg-slate-50 border border-slate-100 rounded-xl text-xs">
-                              <div>
-                                <p className="font-bold text-slate-800">{mov.nombre}</p>
-                                <p className="text-[10px] text-slate-400 mt-0.5 font-medium">{mov.fecha} • {mov.cantidad} {mov.unidad} {corral ? `• ${corral.nombre}` : ''}</p>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <span className={`font-bold ${mov.movimiento === 'entrada' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                  {mov.movimiento === 'entrada' ? '+' : '-'}{formatearMoneda(mov.costoTotal ?? mov.costo ?? 0)}
-                                </span>
-                                <button type="button" onClick={() => handleEliminarDato(mov.movimiento === 'entrada' ? 'compraMedica' : 'usoMedico', mov.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-all"><Trash2 size={15} /></button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      {listComprasMedicas.length === 0 && listUsosMedicos.length === 0 && <p className="text-center text-slate-400 italic py-8 text-xs font-semibold">No hay movimientos médicos registrados.</p>}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {sanidadTab === 'protocolos' && (
-              <div className="space-y-6">
-                <div>
-                  <h3 className="font-extrabold text-slate-800 text-lg">Protocolo Sanitario Base</h3>
-                  <p className="text-xs text-slate-500 mt-1">Este calendario clínico estándar se aplicará a todos los nuevos lotes cuando ingreses un corral. Modifica los pasos según las pautas de tu veterinario.</p>
-                </div>
-                <div className="space-y-3">
-                  {listProtocoloSanitario.sort((a, b) => (Number(a.dia) || 0) - (Number(b.dia) || 0)).map(paso => (
-                    <div key={paso.id} className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-slate-50/50 transition-colors">
-                      <div className="flex flex-col md:flex-row md:items-start justify-between gap-3 text-xs">
-                        <div>
-                          <div className="flex flex-wrap gap-1.5 mb-2">
-                            <span className="bg-slate-900 text-white text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md">{paso.rango || `Día ${paso.dia}`}</span>
-                            <span className="bg-rose-50 text-rose-700 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-rose-100">{paso.tipo || 'Sanidad'}</span>
-                            {paso.duracion && <span className="bg-slate-200 text-slate-600 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md">Duración: {paso.duracion}</span>}
-                          </div>
-                          <h4 className="font-extrabold text-slate-800 text-sm leading-tight">{paso.tarea}</h4>
-                          {paso.producto && <p className="text-slate-600 mt-1.5"><strong>Producto Sugerido:</strong> {paso.producto}</p>}
-                          {getProductoMedicoLigado(paso) && (
-                            <p className="text-indigo-600 font-bold mt-1 font-mono">
-                              Farmacia Ligada: {getProductoMedicoLigado(paso).nombre}
-                            </p>
-                          )}
-                          {paso.condicion && <p className="text-slate-500 mt-1 text-[11px] leading-relaxed"><strong>Condición:</strong> {paso.condicion}</p>}
-                          {paso.nota && <p className="text-slate-400 bg-white p-2.5 rounded-lg border border-slate-200/50 mt-2 leading-relaxed">{paso.nota}</p>}
-                        </div>
-                        <button onClick={() => handleEliminarPasoProtocolo(paso.id)} className="text-slate-300 hover:text-rose-500 transition-colors p-1 rounded-md shrink-0 self-end md:self-start" title="Eliminar paso">
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <form onSubmit={handleAgregarPasoProtocolo} className="bg-rose-50/30 border border-rose-200/60 rounded-2xl p-5 space-y-4 text-xs font-semibold">
-                  <h4 className="text-rose-900 font-extrabold text-sm flex items-center gap-1.5"><Plus size={16} /> Agregar Paso Clínico al Protocolo Base</h4>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Día de Aplicación</label>
-                      <input type="number" name="dia" min="0" required placeholder="Día (ej. 7)" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white text-slate-800 font-bold" />
-                    </div>
-                    <div>
-                      <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Rango Descriptivo</label>
-                      <input name="rango" placeholder="Ej. Día 7-10" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-                    </div>
-                    <div>
-                      <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Tipo de Actividad</label>
-                      <input name="tipo" placeholder="Ej. Vacunación" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-                    </div>
-                    <div>
-                      <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Duración (Frecuencia)</label>
-                      <input name="duracion" placeholder="Ej. 1 revisión" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Acción / Tarea Principal</label>
-                    <input name="tarea" required placeholder="Ej. Aplicar Ivermectina 1% inyectable" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Producto Comercial Sugerido</label>
-                      <input name="producto" placeholder="Ej. Ivermectina L.A." className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-                    </div>
-                    <div>
-                      <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Ligar a Fármaco de Farmacia</label>
-                      <select name="productoMedicoId" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white text-slate-700">
-                        <option value="">Sin ligar</option>
-                        {listCatalogoMedico.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Indicaciones Clínicas (Dosis, Cuándo aplicar)</label>
-                    <textarea name="condicion" placeholder="Sarna, piojos o comezón..." className="w-full p-3 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white min-h-[76px]" />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Advertencia o Nota Técnica</label>
-                    <textarea name="nota" placeholder="Pesar bien para evitar sobredosis..." className="w-full p-3 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white min-h-[76px]" />
-                  </div>
-                  <button type="submit" className="bg-rose-600 hover:bg-rose-700 text-white font-black px-6 py-3 rounded-xl transition-all shadow-md shadow-rose-600/10 flex items-center justify-center gap-1.5"><Plus size={16} /> Guardar Paso Sanitario</button>
-                </form>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
   const renderFinanzasGlobales = () => {
     // 1. AGREGACIÓN FINANCIERA HISTÓRICA (todos los lotes: Activos y Cerrados)
     const resumenPorLote = listLotes.map(lote => {
@@ -5962,10 +5830,6 @@ return (
                 <Archive size={18} className="mr-3" /> Bodega Central
               </button>
 
-              <button onClick={() => { setVista('controlSanitario'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'controlSanitario' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <HeartPulse size={18} className="mr-3" /> Control Sanitario
-              </button>
-
               <button onClick={() => { setVista('finanzasGlobales'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'finanzasGlobales' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
                 <DollarSign size={18} className="mr-3" /> Finanzas Globales
               </button>
@@ -6011,7 +5875,6 @@ return (
             <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center min-w-0 truncate">
               {vista === 'dashboard' && <><LayoutDashboard size={18} className="mr-2 text-emerald-600" /> Panel Principal</>}
               {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600" /> Bodega Central Unificada</>}
-              {vista === 'controlSanitario' && <><HeartPulse size={18} className="mr-2 text-rose-600" /> Control Sanitario</>}
               {vista === 'calendario' && <><Calendar size={18} className="mr-2 text-emerald-600" /> Calendario</>}
               {vista === 'corralDetail' && <><Box size={18} className="mr-2 text-emerald-600" /> Control de Corral</>}
               {vista === 'historial' && <><ClipboardList size={18} className="mr-2 text-indigo-600" /> Historial de Lotes Finalizados</>}
@@ -6028,7 +5891,6 @@ return (
         <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50/50">
           {vista === 'dashboard' && renderDashboard()}
           {vista === 'bodega' && renderBodega()}
-          {vista === 'controlSanitario' && renderControlSanitario()}
           {vista === 'calendario' && renderCalendario()}
           {vista === 'laboratorio' && renderLaboratorio()}
           {vista === 'historial' && renderHistorial()}
