@@ -3,11 +3,19 @@ import {
   Settings, Plus, Activity, Syringe, Wheat, Scale, Calendar, Users,
   ChevronRight, ClipboardList, CheckCircle, Trash2, TrendingUp, PiggyBank,
   AlertTriangle, HeartPulse, Receipt, PieChart, Calculator, Leaf, Printer, X, Clock,
-  Archive, Box, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
+  Archive, Box, Package, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
   Beaker, ShoppingCart, FileText, Download, LogOut, Menu
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { calculateLotStatistics } from './domain/lotStatistics.js';
+import { calculateLotStatistics, parseLocalDate } from './domain/lotStatistics.js';
+import {
+  INNOSURE_PLANS,
+  PLAN_INNOSURE_POR_DEFECTO,
+  calcularPlanInnosure,
+  composicionLote,
+  planificarSincronizacion,
+  validarFechaDosis
+} from './domain/sanitaryPlan.js';
 
 // --- IMPORTACIONES DE FIREBASE NUBE ---
 import { initializeApp } from 'firebase/app';
@@ -189,6 +197,16 @@ const INITIAL_CATALOGO_MEDICO = [
   { id: 'med5', nombre: 'Desinfectante de instalaciones', categoria: 'Bioseguridad', unidad: 'galón', stockMinimo: 1, diasAlertaVencimiento: 60 },
 ];
 
+// Materiales de manejo que se compran a bodega y se consumen por corral: no son
+// alimento ni medicina, pero cuestan plata y hay que saber cuánto queda.
+const INITIAL_CATALOGO_INSUMOS = [
+  { id: 'ins1', nombre: 'Viruta / aserrín', categoria: 'Cama', unidad: 'saco', stockMinimo: 5 },
+  { id: 'ins2', nombre: 'Cal hidratada', categoria: 'Bioseguridad', unidad: 'saco', stockMinimo: 2 },
+  { id: 'ins3', nombre: 'Desinfectante de corrales', categoria: 'Bioseguridad', unidad: 'galón', stockMinimo: 1 },
+  { id: 'ins4', nombre: 'Guantes desechables', categoria: 'Manejo', unidad: 'caja', stockMinimo: 1 },
+  { id: 'ins5', nombre: 'Jeringas y agujas', categoria: 'Manejo', unidad: 'paquete', stockMinimo: 2 }
+];
+
 const CRONOGRAMA_ALIMENTACION = [
   { fase: 1, alimento: 'VITALECHON 1', diaInicio: 1, diaFin: 11, consumoTotalLb: 6.6 },
   { fase: 2, alimento: 'VITALECHON 2', diaInicio: 12, diaFin: 21, consumoTotalLb: 11.0 },
@@ -201,75 +219,160 @@ const CRONOGRAMA_ALIMENTACION = [
 
 const INITIAL_PROTOCOLO_SANITARIO = [
   {
+    id: 'ps7',
+    dia: 0,
+    rango: 'Día 0 (ingreso)',
+    tarea: 'Refuerzo inyectado de ingreso',
+    tipo: 'Refuerzo',
+    categoria: 'medicamento',
+    claseMedicamento: 'refuerzo',
+    producto: 'Emicina o Tigen · 1/2 cc por lechón',
+    duracion: 'Dosis única',
+    condicion: 'Parte del procedimiento de ingreso, a todo el lote.',
+    nota: 'No tiene efecto sobre la fecha de venta: se aplica el día de entrada y el lote sale meses después.'
+  },
+  {
+    id: 'ps8',
+    dia: 0,
+    rango: 'Día 0 (ingreso)',
+    tarea: 'Proteinzoo Plus (opcional)',
+    tipo: 'Refuerzo',
+    categoria: 'medicamento',
+    claseMedicamento: 'refuerzo',
+    producto: 'Proteinzoo Plus · 1/2 cc por lechón',
+    duracion: 'Dosis única',
+    condicion: 'Opcional. A criterio, según cómo lleguen los lechones.',
+    nota: 'Si no se aplica, marcar el paso como omitido para que no quede como pendiente.'
+  },
+  {
     id: 'ps1',
     dia: 0,
-    rango: 'Día 0',
-    tarea: 'Agua con electrolitos',
+    rango: 'Día 0-3',
+    tarea: 'Sueros y electrolitos en agua',
     tipo: 'Hidratación',
+    categoria: 'medicamento',
     producto: 'Electrolitos orales para cerdos',
     productoMedicoId: 'med1',
-    duracion: '12-24 horas',
-    condicion: 'Especialmente si llegan acalorados, débiles, recién destetados, con viaje largo, orejas caídas, ojos hundidos o poca actividad.',
-    nota: 'No extender más de 48 horas; después priorizar agua normal, alimento fresco y observación.'
-  },
-  {
-    id: 'ps2',
-    dia: 1,
-    rango: 'Día 1-3',
-    tarea: 'Multivitamínico oral en agua',
-    tipo: 'Adaptación',
-    producto: 'Complejo B, vitaminas A, D3, E y C; aminoácidos si el producto los incluye',
-    productoMedicoId: 'med2',
-    duracion: '3 días seguidos',
-    condicion: 'Útil en estrés, bajo consumo y adaptación.',
-    nota: 'Las vitaminas son apoyo; el crecimiento depende de alimento, agua y manejo.'
-  },
-  {
-    id: 'ps3',
-    dia: 4,
-    rango: 'Día 4-6',
-    tarea: 'Observación sin medicar si el lote está estable',
-    tipo: 'Observación',
-    producto: 'Agua normal y alimento fresco',
-    duracion: '3 días',
-    condicion: 'Revisar consumo, diarrea, tos, retrasados, frío, flacos o decaídos.',
-    nota: 'Evitar desparasitar el mismo día de llegada salvo parásitos externos evidentes.'
+    duracion: 'Los primeros 3 días',
+    condicion: 'Siempre al llegar el lote, y con más razón si vienen de viaje largo, acalorados, recién destetados o decaídos.',
+    nota: 'No pasar de 48-72 horas; después agua normal, alimento fresco y observación.'
   },
   {
     id: 'ps4',
-    dia: 7,
-    rango: 'Día 7-10',
-    tarea: 'Primera desparasitación',
+    dia: 14,
+    rango: 'Día 14 · ~5 semanas de edad',
+    tarea: '1ª desparasitación',
     tipo: 'Desparasitación',
+    categoria: 'medicamento',
+    pesoEsperado: '18–22 lb (8–10 kg)',
     producto: 'Fenbendazol si solo buscas control interno; ivermectina/doramectina si hay sarna, piojos o comezón.',
     productoMedicoId: 'med3',
     duracion: 'Según etiqueta del producto',
     condicion: 'Elegir producto según signos, peso y condición del lote.',
-    nota: 'En lechones pequeños, pesar o estimar bien para evitar subdosificación o sobredosificación.'
-  },
-  {
-    id: 'ps5',
-    dia: 14,
-    rango: 'Día 14-21',
-    tarea: 'Revisión clínica del lote',
-    tipo: 'Revisión',
-    producto: 'Sin producto obligatorio',
-    duracion: '1 revisión',
-    condicion: 'Buscar diarrea, tos, retrasados, condición corporal, pelo áspero o bajo consumo.',
-    nota: 'Registrar hallazgos y consultar veterinario si hay signos persistentes.'
+    nota: 'Pesar o estimar bien el peso para no subdosificar ni sobredosificar.'
   },
   {
     id: 'ps6',
-    dia: 28,
-    rango: 'Día 28-35',
-    tarea: 'Segunda desparasitación condicional',
-    tipo: 'Condicional',
+    dia: 56,
+    rango: 'Día 56 · ~11 semanas de edad',
+    tarea: '2ª desparasitación',
+    tipo: 'Desparasitación',
+    categoria: 'medicamento',
+    pesoEsperado: '60–75 lb (28–35 kg)',
     producto: 'Según producto usado y recomendación veterinaria',
     productoMedicoId: 'med3',
     duracion: 'Según etiqueta del producto',
-    condicion: 'Aplicar si hay piso de tierra, humedad, historial desconocido, signos clínicos, mala conversión o presión parasitaria alta.',
-    nota: 'En corrales limpios de cemento puede omitirse si no hay signos o recomendación veterinaria.'
+    condicion: 'Revisar peso antes de dosificar: a esta edad el consumo y el tamaño cambian rápido.',
+    nota: 'Alternar principio activo si se repite el mismo del primer ciclo.'
   },
+  {
+    id: 'ps9',
+    dia: 98,
+    rango: 'Día 98 · ~17 semanas de edad',
+    tarea: '3ª desparasitación',
+    tipo: 'Desparasitación',
+    categoria: 'medicamento',
+    pesoEsperado: '130–155 lb (60–70 kg)',
+    producto: 'Según producto usado y recomendación veterinaria',
+    productoMedicoId: 'med3',
+    duracion: 'Según etiqueta del producto',
+    condicion: 'Última desparasitación del ciclo, antes de la fase de finalización.',
+    nota: 'Verificar el período de retiro del producto contra la fecha de venta proyectada.'
+  },
+];
+
+// Pasos de Innosure. No viven en el protocolo base porque solo aplican a los lotes que
+// tienen machos enteros: las hembras y los machos capados nunca lo llevan. El dia de
+// cada dosis sale del plan elegido para el lote (20 o 22 semanas).
+const PROTOCOLO_INNOSURE = [
+  {
+    id: 'inn1',
+    innosureDosis: 1,
+    tarea: '1ª dosis de Innosure',
+    tipo: 'Innosure',
+    categoria: 'medicamento',
+    producto: 'Innosure (inmunocastración) — solo machos enteros',
+    duracion: 'Dosis única',
+    condicion: 'Aplicar únicamente a los machos sin capar del lote.',
+    nota: 'Entre esta dosis y la segunda deben pasar mínimo 2 semanas.'
+  },
+  {
+    id: 'inn2',
+    innosureDosis: 2,
+    tarea: '2ª dosis de Innosure',
+    tipo: 'Innosure',
+    categoria: 'medicamento',
+    producto: 'Innosure (inmunocastración) — refuerzo',
+    duracion: 'Dosis única',
+    condicion: 'Requiere que la 1ª dosis ya esté aplicada.',
+    nota: 'La venta queda bloqueada hasta 3 semanas después de esta dosis.'
+  }
+];
+
+// Los pasos de observacion y revision clinica no son medicamentos y no deben ensuciar
+// el calendario de aplicaciones. Los registros viejos de Firestore no traen `categoria`,
+// asi que se infiere del tipo para no tener que migrar nada.
+const TIPOS_SIN_MEDICAMENTO = ['Observación', 'Revisión', 'Manejo'];
+const esTareaDeMedicamento = (tarea) => (
+  tarea?.categoria ? tarea.categoria === 'medicamento' : !TIPOS_SIN_MEDICAMENTO.includes(tarea?.tipo)
+);
+
+// Clases de medicamento que se calendarizan de verdad en esta granja.
+const CLASES_MEDICAMENTO = {
+  refuerzo: { label: 'Refuerzo de ingreso', emoji: '💉', chip: 'bg-rose-100 text-rose-700 border-rose-200', dot: 'bg-rose-500' },
+  suero: { label: 'Sueros / electrolitos', emoji: '💧', chip: 'bg-sky-100 text-sky-700 border-sky-200', dot: 'bg-sky-500' },
+  desparasitacion: { label: 'Desparasitación', emoji: '💊', chip: 'bg-amber-100 text-amber-800 border-amber-200', dot: 'bg-amber-500' },
+  innosure: { label: 'Innosure', emoji: '🔵', chip: 'bg-indigo-100 text-indigo-700 border-indigo-200', dot: 'bg-indigo-500' },
+  otro: { label: 'Otros', emoji: '🩺', chip: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'bg-slate-400' },
+  ventaOk: { label: 'Venta habilitada', emoji: '✅', chip: 'bg-emerald-100 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500' }
+};
+
+const claseDeMedicamento = (tarea) => {
+  if (tarea?.innosureDosis) return 'innosure';
+  // Los pasos del protocolo traen su clase explicita; el texto es solo el respaldo
+  // para tareas viejas de Firestore que no la tienen.
+  if (tarea?.claseMedicamento && CLASES_MEDICAMENTO[tarea.claseMedicamento]) return tarea.claseMedicamento;
+  const texto = `${tarea?.tipo || ''} ${tarea?.tarea || ''} ${tarea?.producto || ''}`.toLowerCase();
+  if (texto.includes('desparasit')) return 'desparasitacion';
+  if (texto.includes('emicina') || texto.includes('tigen') || texto.includes('proteinzoo') || texto.includes('refuerzo')) return 'refuerzo';
+  if (texto.includes('electrolito') || texto.includes('suero') || texto.includes('hidrat') || texto.includes('vitam')) return 'suero';
+  return 'otro';
+};
+
+// IMPORTACIÓN POR ÚNICA VEZ — fechas reales de Innosure tomadas del archivo
+// "Plan_corrales_actualizable_Innosure.xlsx" de la granja.
+// Negro en el Excel = dosis aplicada; rojo / resaltado amarillo = todavía pendiente.
+// Se puede borrar esta constante y su botón una vez importado.
+const IMPORTACION_INNOSURE_EXCEL = [
+  { corral: 'Corral 3', dosis: [{ fecha: '2026-07-30', aplicada: true }, { fecha: '2026-08-25', aplicada: true }] },
+  { corral: 'Corral 4', dosis: [{ fecha: '2026-07-30', aplicada: true }, { fecha: '2026-08-25', aplicada: true }] },
+  { corral: 'Corral 5', dosis: [{ fecha: '2026-07-30', aplicada: true }, { fecha: '2026-09-02', aplicada: true }] },
+  { corral: 'Corral 6', dosis: [{ fecha: '2026-09-02', aplicada: true }, { fecha: '2026-09-21', aplicada: false }] },
+  { corral: 'Corral 7', dosis: [{ fecha: '2026-09-02', aplicada: true }, { fecha: '2026-09-21', aplicada: false }] },
+  { corral: 'Corral 8', dosis: [{ fecha: '2026-09-24', aplicada: false }, { fecha: '2026-10-20', aplicada: false }] },
+  { corral: 'Corral 9', dosis: [{ fecha: '2026-09-24', aplicada: false }, { fecha: '2026-10-20', aplicada: false }] },
+  { corral: 'Corral 10', dosis: [{ fecha: '2026-09-24', aplicada: false }, { fecha: '2026-10-30', aplicada: false }] },
+  { corral: 'Corral 11', dosis: [{ fecha: '2026-09-24', aplicada: false }, { fecha: '2026-11-13', aplicada: false }] }
 ];
 
 const addDaysToDate = (dateStr, days) => {
@@ -285,6 +388,108 @@ const addDaysToIsoDate = (dateStr, days) => {
 };
 
 const safeArr = (val, fallback = []) => Array.isArray(val) ? val : fallback;
+
+const todayIso = () => new Date().toISOString().split('T')[0];
+
+// Tabla de existencias compartida por las tres bodegas: alimento, farmacia e insumos.
+// `filas` viene ya normalizada para que cada bodega decida qué es "stock" y qué es "tipo".
+const TablaInventarioBodega = ({ titulo, encabezadoStock = 'Stock', filas, vacio, onEliminar }) => (
+  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+    <div className="flex items-center justify-between bg-slate-900 text-white px-5 py-3.5">
+      <div className="flex items-center gap-2">
+        <Box size={17} className="text-emerald-400" />
+        <h3 className="font-bold text-sm">{titulo}</h3>
+      </div>
+      <span className="text-[10px] text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">Tiempo Real</span>
+    </div>
+
+    {filas.length === 0 ? (
+      <p className="py-10 text-center text-slate-400 text-xs">{vacio}</p>
+    ) : (
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-50/50 border-b border-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider">
+            <tr>
+              <th className="p-4 pl-6 font-bold">Producto</th>
+              <th className="p-4 font-bold text-center">Tipo</th>
+              <th className="p-4 font-bold text-center">{encabezadoStock}</th>
+              <th className={`p-4 font-bold text-right ${onEliminar ? '' : 'pr-6'}`}>Valor</th>
+              {onEliminar && <th className="p-4 pr-6" />}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-slate-700">
+            {filas.map(fila => (
+              <tr key={fila.id} className="hover:bg-slate-50/50 transition-colors">
+                <td className="p-4 pl-6 font-bold text-slate-800">
+                  {fila.nombre}
+                  {fila.subtitulo && <span className="text-[10px] text-slate-400 font-normal ml-1.5">({fila.subtitulo})</span>}
+                </td>
+                <td className="p-4 text-center text-xs font-bold text-slate-400 uppercase">{fila.tipo}</td>
+                <td className="p-4 text-center">
+                  <span className={`px-3 py-1 rounded-full font-black text-sm ${fila.alerta ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
+                    {fila.stock}
+                  </span>
+                  {fila.notaStock && <p className="text-[10px] text-slate-400 font-semibold mt-1">{fila.notaStock}</p>}
+                </td>
+                <td className={`p-4 text-right font-bold text-slate-800 ${onEliminar ? '' : 'pr-6'}`}>{fila.valor}</td>
+                {onEliminar && (
+                  <td className="p-4 pr-6 text-right">
+                    <button onClick={() => onEliminar(fila.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors" title="Quitar del catálogo">
+                      <Trash2 size={15} />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+);
+
+// --- PRESENTACION UNIFORME DE PESO Y FCA ---
+// Todas las pantallas deben mostrar el mismo numero para el mismo lote. El peso que
+// se muestra es el de proyeccion (medido si el pesaje esta fresco, estimado si no),
+// siempre marcado con ~ cuando es estimado.
+const formatPesoLb = (stats, decimales = 1) => {
+  if (!stats || !(stats.pesoParaProyeccion > 0)) return 'Sin pesaje';
+  const valor = stats.pesoParaProyeccion.toFixed(decimales);
+  return stats.pesoEsEstimado ? `~${valor} lb` : `${valor} lb`;
+};
+
+const tituloPesoLb = (stats) => {
+  if (!stats) return undefined;
+  if (stats.pesoEsEstimado) {
+    return `Peso estimado por consumo de alimento (conversión de referencia 3.0). Último pesaje real: ${stats.pesoActual.toFixed(1)} lb hace ${stats.diasSinPesaje} días.`;
+  }
+  if (stats.pesoAjustadoPorVenta) {
+    return `Promedio de los cerdos que quedan, recalculado tras la venta parcial. Último pesaje del lote completo: ${stats.pesoActualRegistrado.toFixed(1)} lb.`;
+  }
+  return undefined;
+};
+
+// Una FCA sin al menos dos pesajes recientes es un artefacto, no un indicador.
+const formatFca = (stats) => {
+  if (!stats || !(stats.fca > 0)) return '—';
+  return stats.fcaEsConfiable ? stats.fca.toFixed(2) : `${stats.fca.toFixed(2)} ⚠`;
+};
+
+const tituloFca = (stats) => {
+  if (!stats) return undefined;
+  if (!(stats.fca > 0)) return 'Sin datos suficientes: hacen falta al menos dos pesajes para calcular la conversión.';
+  if (!stats.fcaEsConfiable) {
+    return stats.pesajeVencido
+      ? `No confiable: el último pesaje tiene ${stats.diasSinPesaje} días, así que el peso producido está subestimado.`
+      : 'No confiable: hace falta al menos un segundo pesaje reciente para que este número signifique algo.';
+  }
+  return undefined;
+};
+
+const claseFca = (stats, claseNormal, claseAlta) => {
+  if (!stats || !stats.fcaEsConfiable) return 'text-slate-400';
+  return stats.fca > 3 ? claseAlta : claseNormal;
+};
 const NOTIFICATION_DAY_MS = 24 * 60 * 60 * 1000;
 const INFO_NOTIFICATION_VISIBLE_MS = 3 * NOTIFICATION_DAY_MS;
 const CRITICAL_NOTIFICATION_VISIBLE_MS = 7 * NOTIFICATION_DAY_MS;
@@ -359,7 +564,6 @@ function Porcicontrol({ user, db, appId }) {
   const [reglasMezcla, setReglasMezcla, l3] = useCloudStorage('agro_reglas_mezcla', [{ id: 1, base: 'MAÍZ AMARILLO', aditivo: 'MELAZA', factor: 0.012 }], user, db, appId);
   const [formulasEtapas, setFormulasEtapas, l4] = useCloudStorage('agro_formulas_etapas', Array.from({ length: 7 }, (_, i) => ({ fase: i + 1, ingredientes: [] })), user, db, appId);
   const [pesoAlertaMezcla, setPesoAlertaMezcla, l5] = useCloudStorage('agro_peso_alerta', 100, user, db, appId);
-  const [protocoloSanitarioBase, setProtocoloSanitarioBase, l6] = useCloudStorage('agro_protocolosanitario', INITIAL_PROTOCOLO_SANITARIO, user, db, appId);
 
   const [corrales, setCorrales, l7] = useCloudStorage('agro_corrales', [
     { id: 'c1', nombre: 'Corral 1', capacidad: 15 },
@@ -383,9 +587,12 @@ function Porcicontrol({ user, db, appId }) {
   const [catalogoMedico, setCatalogoMedico, l20] = useCloudStorage('agro_catalogo_medico', INITIAL_CATALOGO_MEDICO, user, db, appId);
   const [comprasMedicas, setComprasMedicas, l21] = useCloudStorage('agro_compras_medicas', [], user, db, appId);
   const [usosMedicos, setUsosMedicos, l22] = useCloudStorage('agro_usos_medicos', [], user, db, appId);
+  const [catalogoInsumos, setCatalogoInsumos, l23] = useCloudStorage('agro_catalogo_insumos', INITIAL_CATALOGO_INSUMOS, user, db, appId);
+  const [comprasInsumos, setComprasInsumos, l24] = useCloudStorage('agro_compras_insumos', [], user, db, appId);
+  const [usosInsumos, setUsosInsumos, l25] = useCloudStorage('agro_usos_insumos', [], user, db, appId);
 
   // PANTALLA DE CARGA MIENTRAS SE CONECTA A FIREBASE
-  const isAppReady = l1 && l2 && l3 && l4 && l5 && l6 && l7 && l8 && l9 && l10 && l11 && l12 && l13 && l14 && l15 && l16 && l17 && l18 && l19 && l20 && l21 && l22;
+  const isAppReady = l1 && l2 && l3 && l4 && l5 && l7 && l8 && l9 && l10 && l11 && l12 && l13 && l14 && l15 && l16 && l17 && l18 && l19 && l20 && l21 && l22 && l23 && l24 && l25;
 
   // --- VARIABLES BLINDADAS ---
   const listCatAlimentos = safeArr(catalogoAlimento, INITIAL_CATALOGO);
@@ -401,12 +608,18 @@ function Porcicontrol({ user, db, appId }) {
   const listGastosExtra = safeArr(gastosExtra);
   const listCompras = safeArr(comprasBodega);
   const listVentas = safeArr(ventas);
-  const listProtocoloSanitario = safeArr(protocoloSanitarioBase, INITIAL_PROTOCOLO_SANITARIO);
+  // El protocolo de la granja es fijo: sueros, desparasitación x2 e Innosure cuando hay
+  // machos enteros. Cualquier otra cosa (una enfermedad puntual) se registra como
+  // tratamiento médico, no como paso del protocolo.
+  const listProtocoloSanitario = INITIAL_PROTOCOLO_SANITARIO;
   const listTareasSanidad = safeArr(tareasSanidad);
   const listEventosCalendario = safeArr(eventosCalendario);
   const listCatalogoMedico = safeArr(catalogoMedico, INITIAL_CATALOGO_MEDICO);
   const listComprasMedicas = safeArr(comprasMedicas);
   const listUsosMedicos = safeArr(usosMedicos);
+  const listCatalogoInsumos = safeArr(catalogoInsumos, INITIAL_CATALOGO_INSUMOS);
+  const listComprasInsumos = safeArr(comprasInsumos);
+  const listUsosInsumos = safeArr(usosInsumos);
 
   const runFarmUpdates = async (updates) => {
     const entries = Object.entries(updates);
@@ -428,7 +641,8 @@ function Porcicontrol({ user, db, appId }) {
   };
 
   // --- NAVEGACIÓN Y PANTALLAS ---
-  const [vista, setVista] = useState('dashboard');
+  // La app abre en "Hoy": lo primero que necesita el productor es qué hacer, no métricas.
+  const [vista, setVista] = useState('hoy');
   const [corralSeleccionado, setCorralSeleccionado] = useState(null);
   const [finanzasLoteAbierto, setFinanzasLoteAbierto] = useState(null);
   const [loteHistorialSeleccionado, setLoteHistorialSeleccionado] = useState(null);
@@ -450,6 +664,8 @@ function Porcicontrol({ user, db, appId }) {
   const [pesoInputVenta, setPesoInputVenta] = useState('');
   const [tipoReporteImpresion, setTipoReporteImpresion] = useState('interno');
   const [simuladorMuertesExtra, setSimuladorMuertesExtra] = useState(0);
+  const [ingresoMachos, setIngresoMachos] = useState(0);
+  const [tratamientoProductoId, setTratamientoProductoId] = useState('');
 
   // --- ESTADOS BODEGA & PUROS ---
   const [modalConfirm, setModalConfirm] = useState({ visible: false, tipo: 'confirm', titulo: '', mensaje: '', onConfirm: null });
@@ -631,14 +847,14 @@ function Porcicontrol({ user, db, appId }) {
       const margenPorcentaje = ingresoTotal > 0 ? (stats.utilidadNeta / ingresoTotal) * 100 : 0;
       const costoPorCerdoActual = costoTotal / cerdosOperados;
       const costoPorLbProducida = stats.pesoProducidoLb > 0 ? costoTotal / stats.pesoProducidoLb : 0;
-      const puntoEquilibrioLb = (stats.librasVendidas + (stats.pesoActual * stats.cantidadActual)) > 0
-        ? costoTotal / (stats.librasVendidas + (stats.pesoActual * stats.cantidadActual))
-        : 0;
+      const librasEnPieYVendidas = stats.librasVendidas + (stats.pesoParaProyeccion * stats.cantidadActual);
+      const puntoEquilibrioLb = librasEnPieYVendidas > 0 ? costoTotal / librasEnPieYVendidas : 0;
 
       return {
         loteId: lote.id,
         corral: corral?.nombre || 'Corral no encontrado',
         estado: lote.estado || 'Activo',
+        parametrosIncompletos: stats.parametrosIncompletos,
         fechas: {
           ingreso: lote.fechaIngreso || null,
           salida: lote.fechaSalida || null,
@@ -655,12 +871,22 @@ function Porcicontrol({ user, db, appId }) {
         },
         pesosYProduccion: {
           pesoInicialPromedioLb: round(stats.pesoInicial, 1),
-          pesoActualPromedioLb: round(stats.pesoActual, 1),
+          // pesoActualPromedioLb es el que se debe usar para decidir: es el medido si el
+          // pesaje esta fresco y el estimado por consumo si esta vencido.
+          pesoActualPromedioLb: round(stats.pesoParaProyeccion, 1),
+          pesoUltimoPesajeRealLb: round(stats.pesoActual, 1),
+          pesoEsEstimadoPorConsumo: stats.pesoEsEstimado,
+          diasSinPesaje: stats.diasSinPesaje,
+          pesajeVencido: stats.pesajeVencido,
           librasVendidasBascula: round(stats.librasVendidas, 1),
           pesoProducidoParaFcaGmdLb: round(stats.pesoProducidoLb, 1),
           animalDias: round(stats.animalDias, 1),
           gmdLbDia: round(stats.adg, 3),
+          consumoPorCerdoLb: round(stats.consumoPorCerdoLb, 1),
+          consumoCicloPorcentaje: round(stats.consumoCicloPorcentaje, 1),
+          excedeCicloCompleto: stats.excedeCicloCompleto,
           fca: round(stats.fca, 3),
+          fcaEsConfiable: stats.fcaEsConfiable,
           fcaEstimadoPorFaltaDePesos: stats.fcaEsEstimado
         },
         finanzas: {
@@ -792,10 +1018,15 @@ function Porcicontrol({ user, db, appId }) {
 
     const alertas = [];
     activos.forEach(lote => {
-      if (lote.pesosYProduccion.fca > 3) alertas.push({ severidad: 'alta', tipo: 'FCA alto', corral: lote.corral, detalle: `FCA ${lote.pesosYProduccion.fca}` });
+      // Solo se reporta la FCA cuando es confiable: un lote sin pesajes produce FCAs
+      // de 30+ que no son un problema zootecnico sino un hueco de captura de datos.
+      if (lote.pesosYProduccion.fcaEsConfiable && lote.pesosYProduccion.fca > 3) alertas.push({ severidad: 'alta', tipo: 'FCA alto', corral: lote.corral, detalle: `FCA ${lote.pesosYProduccion.fca}` });
+      if (lote.pesosYProduccion.excedeCicloCompleto) alertas.push({ severidad: 'alta', tipo: 'Sobre-engorde', corral: lote.corral, detalle: `Ya consumió el ${lote.pesosYProduccion.consumoCicloPorcentaje}% del alimento de un ciclo completo (${lote.pesosYProduccion.consumoPorCerdoLb} lb/cerdo)` });
+      if (lote.pesosYProduccion.pesajeVencido) alertas.push({ severidad: 'alta', tipo: 'Pesaje vencido', corral: lote.corral, detalle: `${lote.pesosYProduccion.diasSinPesaje} días sin pesar; el peso actual es una estimación` });
       if (lote.animales.mortalidadPorcentaje > 5) alertas.push({ severidad: 'alta', tipo: 'Mortalidad alta', corral: lote.corral, detalle: `${lote.animales.mortalidadPorcentaje}%` });
       if (lote.finanzas.utilidadNetaRealMasEstimada < 0) alertas.push({ severidad: 'media', tipo: 'Utilidad negativa', corral: lote.corral, detalle: formatearMoneda(lote.finanzas.utilidadNetaRealMasEstimada) });
-      if (lote.pesosYProduccion.pesoActualPromedioLb >= lote.proyecciones.pesoObjetivoLb) alertas.push({ severidad: 'media', tipo: 'Listo para venta', corral: lote.corral, detalle: `${lote.pesosYProduccion.pesoActualPromedioLb} lb promedio` });
+      if (lote.parametrosIncompletos) alertas.push({ severidad: 'media', tipo: 'Parámetros sin configurar', corral: lote.corral, detalle: 'Falta precio de venta por libra o costo del lechón; la rentabilidad de este lote no es real' });
+      if (lote.pesosYProduccion.pesoActualPromedioLb >= lote.proyecciones.pesoObjetivoLb) alertas.push({ severidad: 'media', tipo: 'Listo para venta', corral: lote.corral, detalle: `${lote.pesosYProduccion.pesoActualPromedioLb} lb promedio${lote.pesosYProduccion.pesoEsEstimadoPorConsumo ? ' (estimado)' : ''}` });
       if (lote.proyecciones.alimentoFaltanteLb > 0 && lote.proyecciones.costoAlimentoFaltante > 0) alertas.push({ severidad: 'baja', tipo: 'Alimento faltante proyectado', corral: lote.corral, detalle: `${lote.proyecciones.alimentoFaltanteLb} lb faltantes` });
     });
     ordenCompraLista.forEach(item => {
@@ -1190,6 +1421,133 @@ ${JSON.stringify(contextoGranja)}`;
     });
   }, [listCatalogoMedico, listComprasMedicas, listUsosMedicos]);
 
+  // Stock de insumos: lo comprado menos lo consumido por los corrales. El costo promedio
+  // se recalcula con cada compra, igual que en la bodega médica.
+  const inventarioInsumos = useMemo(() => listCatalogoInsumos.map(item => {
+    const entradas = listComprasInsumos.filter(c => c.productoId === item.id);
+    const salidas = listUsosInsumos.filter(u => u.productoId === item.id);
+    const cantidadComprada = entradas.reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
+    const costoComprado = entradas.reduce((s, c) => s + (Number(c.costoTotal) || 0), 0);
+    const cantidadUsada = salidas.reduce((s, u) => s + (Number(u.cantidad) || 0), 0);
+    const costoUsado = salidas.reduce((s, u) => s + (Number(u.costo) || 0), 0);
+    const stock = Math.max(0, cantidadComprada - cantidadUsada);
+
+    return {
+      ...item,
+      stock,
+      cantidadComprada,
+      cantidadUsada,
+      costoPromedio: cantidadComprada > 0 ? costoComprado / cantidadComprada : 0,
+      valorStock: Math.max(0, costoComprado - costoUsado),
+      bajoStock: stock <= (Number(item.stockMinimo) || 0)
+    };
+  }), [listCatalogoInsumos, listComprasInsumos, listUsosInsumos]);
+
+  const handleAgregarInsumoCatalogo = (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const nombre = fd.get('nombre').trim();
+    if (!nombre) return mostrarAlerta('Falta el nombre', 'Escribí cómo se llama el insumo.');
+    if (listCatalogoInsumos.some(i => i.nombre.toLowerCase() === nombre.toLowerCase())) {
+      return mostrarAlerta('Ya existe', `"${nombre}" ya está en el catálogo.`);
+    }
+    setCatalogoInsumos(prev => [...safeArr(prev, INITIAL_CATALOGO_INSUMOS), {
+      id: crypto.randomUUID(),
+      nombre,
+      categoria: fd.get('categoria').trim() || 'General',
+      unidad: fd.get('unidad').trim() || 'unidad',
+      stockMinimo: parseFloat(fd.get('stockMinimo')) || 0
+    }]);
+    e.target.reset();
+    mostrarAlerta('Insumo agregado', `"${nombre}" ya se puede comprar y asignar a corrales.`, 'success');
+  };
+
+  const handleEliminarInsumoCatalogo = (id) => {
+    const tieneMovimientos = listComprasInsumos.some(c => c.productoId === id) || listUsosInsumos.some(u => u.productoId === id);
+    if (tieneMovimientos) {
+      return mostrarAlerta('No se puede eliminar', 'Este insumo ya tiene compras o consumos registrados. Borrarlo dejaría el historial sin referencia.');
+    }
+    pedirConfirmacion('Eliminar insumo', '¿Quitarlo del catálogo?', () => {
+      setCatalogoInsumos(prev => safeArr(prev, INITIAL_CATALOGO_INSUMOS).filter(i => i.id !== id));
+    });
+  };
+
+  const handleComprarInsumo = (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const producto = listCatalogoInsumos.find(i => i.id === fd.get('productoId'));
+    const cantidad = parseFloat(fd.get('cantidad')) || 0;
+    const costoTotal = parseFloat(fd.get('costoTotal')) || 0;
+    if (!producto || cantidad <= 0) return mostrarAlerta('Datos incompletos', 'Elegí el insumo y una cantidad mayor a cero.');
+
+    const compraId = crypto.randomUUID();
+    setComprasInsumos(prev => [...safeArr(prev), {
+      id: compraId,
+      productoId: producto.id,
+      nombre: producto.nombre,
+      unidad: producto.unidad,
+      fecha: fd.get('fecha'),
+      cantidad,
+      costoTotal,
+      proveedor: fd.get('proveedor').trim()
+    }]);
+    e.target.reset();
+    emitirNotificacionPush({
+      tipo: 'compra',
+      titulo: 'Compra de insumo',
+      descripcion: `${cantidad} ${producto.unidad} de ${producto.nombre} · ${formatearMoneda(costoTotal)}`,
+      entidad: { tipo: 'compraInsumo', id: compraId }
+    });
+    mostrarAlerta('Compra registrada', `Entraron ${cantidad} ${producto.unidad} de ${producto.nombre} a la bodega.`, 'success');
+  };
+
+  // Consumir un insumo en un corral: descuenta stock y carga el costo al lote como
+  // gasto operativo, para que la rentabilidad de ese lote lo refleje.
+  const handleUsarInsumoEnCorral = (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const producto = inventarioInsumos.find(i => i.id === fd.get('productoId'));
+    const lote = listLotes.find(l => l.id === fd.get('loteId'));
+    const cantidad = parseFloat(fd.get('cantidad')) || 0;
+    if (!producto || !lote || cantidad <= 0) return mostrarAlerta('Datos incompletos', 'Elegí insumo, corral y una cantidad mayor a cero.');
+    if (producto.stock < cantidad) {
+      return mostrarAlerta('Stock insuficiente', `Solo quedan ${producto.stock.toFixed(2)} ${producto.unidad} de ${producto.nombre}.`);
+    }
+
+    const costo = cantidad * (producto.costoPromedio || 0);
+    const usoId = crypto.randomUUID();
+    const fecha = fd.get('fecha');
+    const corral = listCorrales.find(c => c.id === lote.corralId);
+
+    setUsosInsumos(prev => [...safeArr(prev), {
+      id: usoId,
+      productoId: producto.id,
+      nombre: producto.nombre,
+      unidad: producto.unidad,
+      fecha,
+      cantidad,
+      costo,
+      loteId: lote.id,
+      observacion: fd.get('observacion').trim()
+    }]);
+    // El costo entra por el mismo canal que cualquier gasto operativo del lote.
+    setGastosExtra(prev => [...safeArr(prev), {
+      id: crypto.randomUUID(),
+      loteId: lote.id,
+      fecha,
+      descripcion: `${producto.nombre} (${cantidad} ${producto.unidad})`,
+      monto: costo,
+      usoInsumoId: usoId
+    }]);
+
+    e.target.reset();
+    mostrarAlerta(
+      'Insumo aplicado',
+      `${cantidad} ${producto.unidad} de ${producto.nombre} a ${corral?.nombre || 'el corral'} · ${formatearMoneda(costo)} cargados al lote.`,
+      'success'
+    );
+  };
+
   const ordenCompraLista = useMemo(() => {
     const necesidadesGlobales = new Map();
 
@@ -1434,21 +1792,58 @@ ${JSON.stringify(contextoGranja)}`;
     mostrarAlerta('Aplicación registrada', 'Se descontó de bodega médica y se sumó el costo al lote.');
   };
 
+  // Tratamiento desde el corral. Si el producto sale de la farmacia descuenta el stock y
+  // calcula el costo al promedio; si es algo que no está en bodega, se registra a mano.
   const handleRegistrarTratamientoManual = (e) => {
     e.preventDefault();
     const loteActivo = getLoteActivo(corralSeleccionado?.id);
     if (!loteActivo) return mostrarAlerta('Error', 'No hay lote activo para registrar el tratamiento.');
 
     const fd = new FormData(e.target);
+    const productoId = fd.get('productoId');
+    const producto = productoId ? inventarioMedico.find(m => m.id === productoId) : null;
     const tratamientoId = crypto.randomUUID();
-    const nombre = fd.get('nombre').trim();
-    const costo = parseFloat(fd.get('costo')) || 0;
+    const fecha = fd.get('fecha');
+
+    let nombre;
+    let costo;
+    let usoMedicoId = null;
+
+    if (producto) {
+      const cantidad = parseFloat(fd.get('cantidad')) || 0;
+      if (cantidad <= 0) return mostrarAlerta('Falta la cantidad', `¿Cuántos ${producto.unidad} de ${producto.nombre} aplicaste?`);
+      if (producto.stock < cantidad) {
+        return mostrarAlerta('Stock insuficiente', `Solo quedan ${producto.stock.toFixed(2)} ${producto.unidad} de ${producto.nombre} en la farmacia.`);
+      }
+      nombre = `${producto.nombre} (${cantidad} ${producto.unidad})`;
+      costo = cantidad * (producto.costoPromedio || 0);
+      usoMedicoId = crypto.randomUUID();
+      setUsosMedicos(prev => [...safeArr(prev), {
+        id: usoMedicoId,
+        productoId: producto.id,
+        nombre: producto.nombre,
+        categoria: producto.categoria,
+        unidad: producto.unidad,
+        fecha,
+        cantidad,
+        costo,
+        loteId: loteActivo.id,
+        tareaId: '',
+        observacion: 'Aplicado desde el corral'
+      }]);
+    } else {
+      nombre = fd.get('nombre').trim();
+      costo = parseFloat(fd.get('costo')) || 0;
+      if (!nombre) return mostrarAlerta('Falta el nombre', 'Escribí qué se aplicó.');
+    }
+
     setVacunas(prev => [...safeArr(prev), {
       id: tratamientoId,
       loteId: loteActivo.id,
-      fecha: fd.get('fecha'),
+      fecha,
       nombre,
-      costo
+      costo,
+      usoMedicoId
     }]);
     emitirNotificacionPush({
       tipo: 'sanidad',
@@ -1500,87 +1895,602 @@ ${JSON.stringify(contextoGranja)}`;
   };
 
   const handleActualizarTareaSanidad = (id, updates) => {
+    const tarea = safeArr(listTareasSanidad).find(t => t.id === id);
+    const nextEstadoPrevio = updates.estado || tarea?.estado || 'pendiente';
+
+    // La 2a dosis de Innosure no se puede registrar antes del minimo de 2 semanas.
+    if (tarea?.innosureDosis === 2 && nextEstadoPrevio === 'hecho') {
+      const lote = listLotes.find(l => l.id === tarea.loteId);
+      const plan = lote ? getPlanInnosure(lote) : null;
+      const fechaPropuesta = updates.completadoEn || tarea.completadoEn || todayIso();
+      const validacion = validarFechaDosis({
+        numero: 2,
+        fecha: fechaPropuesta,
+        fechaPrimeraDosis: plan?.primeraDosis?.fechaReal || null
+      });
+      if (!validacion.valida) {
+        return mostrarAlerta('No se puede registrar la 2ª dosis', validacion.mensaje);
+      }
+    }
+
     setTareasSanidad(prev => safeArr(prev).map(t => {
       if (t.id !== id) return t;
       const nextEstado = updates.estado || t.estado || 'pendiente';
       return {
         ...t,
         ...updates,
-        completadoEn: nextEstado === 'hecho' ? (t.completadoEn || new Date().toISOString().split('T')[0]) : null
+        completadoEn: nextEstado === 'hecho' ? (updates.completadoEn || t.completadoEn || new Date().toISOString().split('T')[0]) : null
       };
     }));
   };
 
-  const handleAgregarPasoProtocolo = (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const dia = parseInt(fd.get('dia'), 10);
-    if (Number.isNaN(dia) || dia < 0) return mostrarAlerta('Error', 'El día del protocolo debe ser 0 o mayor.');
-
-    const nuevoPaso = {
-      id: crypto.randomUUID(),
-      dia,
-      rango: fd.get('rango').trim() || `Día ${dia}`,
-      tarea: fd.get('tarea').trim(),
-      tipo: fd.get('tipo').trim() || 'Sanidad',
-      producto: fd.get('producto').trim(),
-      productoMedicoId: fd.get('productoMedicoId') || '',
-      duracion: fd.get('duracion').trim(),
-      condicion: fd.get('condicion').trim(),
-      nota: fd.get('nota').trim()
-    };
-
-    setProtocoloSanitarioBase(prev => [...safeArr(prev), nuevoPaso].sort((a, b) => (Number(a.dia) || 0) - (Number(b.dia) || 0)));
-    e.target.reset();
-    mostrarAlerta('Paso agregado', 'El protocolo base se actualizó. Los lotes nuevos heredarán este paso.');
-  };
-
-  const handleEliminarPasoProtocolo = (id) => {
-    pedirConfirmacion('Eliminar paso del protocolo', 'Esto no borra tareas ya creadas en lotes activos; solo afecta lotes nuevos.', () => {
-      setProtocoloSanitarioBase(prev => safeArr(prev).filter(p => p.id !== id));
-    });
-  };
-
-  const buildTareasProtocoloParaLote = (lote) => listProtocoloSanitario.map((t) => ({
+  const construirTarea = (lote, t, dia, extra = {}) => ({
     id: crypto.randomUUID(),
     protocoloId: t.id,
     loteId: lote.id,
-    dia: Number(t.dia) || 0,
-    fechaObjetivo: addDaysToIsoDate(lote.fechaIngreso, Number(t.dia) || 0),
-    rango: t.rango || `Día ${t.dia}`,
+    dia,
+    fechaObjetivo: addDaysToIsoDate(lote.fechaIngreso, dia),
+    rango: t.rango || `Día ${dia}`,
     tarea: t.tarea,
     tipo: t.tipo || 'Sanidad',
+    categoria: t.categoria || (TIPOS_SIN_MEDICAMENTO.includes(t.tipo) ? 'manejo' : 'medicamento'),
+    claseMedicamento: t.claseMedicamento || claseDeMedicamento(t),
     producto: t.producto || '',
     productoMedicoId: t.productoMedicoId || '',
+    pesoEsperado: t.pesoEsperado || '',
     duracion: t.duracion || '',
     condicion: t.condicion || '',
     nota: t.nota || '',
     estado: 'pendiente',
     observacion: '',
-    completadoEn: null
-  }));
+    completadoEn: null,
+    ...extra
+  });
 
-  const handleGenerarProtocoloLote = (lote) => {
-    if (!lote) return;
-    setTareasSanidad(prev => [...safeArr(prev).filter(t => t.loteId !== lote.id), ...buildTareasProtocoloParaLote(lote)]);
-    mostrarAlerta('Protocolo generado', 'Se creó el calendario sanitario para este lote.');
+  const buildTareasProtocoloParaLote = (lote) => {
+    const base = listProtocoloSanitario.map((t) => construirTarea(lote, t, Number(t.dia) || 0));
+
+    // Innosure solo para lotes con machos sin capar.
+    const composicion = composicionLote(lote);
+    if (composicion.machosEnteros <= 0) return base;
+
+    const plan = INNOSURE_PLANS[Number(lote.planInnosure)] || INNOSURE_PLANS[PLAN_INNOSURE_POR_DEFECTO];
+    const dias = { 1: plan.primeraDosisDia, 2: plan.segundaDosisDia };
+    const dosis = PROTOCOLO_INNOSURE.map((t) => construirTarea(lote, t, dias[t.innosureDosis], {
+      innosureDosis: t.innosureDosis,
+      rango: `Semana ${Math.round(dias[t.innosureDosis] / 7)}`,
+      producto: `${t.producto} (${composicion.machosEnteros} animales)`
+    }));
+
+    return [...base, ...dosis];
   };
 
-  const getProductoMedicoLigado = (item) => {
-    if (!item) return null;
-    const directo = listCatalogoMedico.find(m => m.id === item.productoMedicoId);
-    if (directo) return inventarioMedico.find(m => m.id === directo.id) || directo;
+  // El desglose por sexo describe a los animales vivos hoy, no al lote de ingreso.
+  const getPlanInnosure = (lote) => calcularPlanInnosure({
+    lote,
+    tareas: listTareasSanidad,
+    totalVivos: calcularEstadisticasLote(lote)?.cantidadActual ?? null
+  });
 
-    const texto = `${item.producto || ''} ${item.tarea || ''}`.toLowerCase();
-    const candidato = listCatalogoMedico.find(m => {
-      const nombre = m.nombre.toLowerCase();
-      return texto.includes(nombre) ||
-        nombre.split(/[ /]+/).filter(Boolean).some(parte => parte.length > 5 && texto.includes(parte));
+  // Permite fijar la composicion por sexo de un lote que ya esta en marcha y regenerar
+  // las dosis de Innosure sin tocar el resto del protocolo ni lo ya aplicado.
+  const handleGuardarComposicion = async (lote, e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const machos = Math.max(0, parseInt(fd.get('machos'), 10) || 0);
+    const hembras = Math.max(0, parseInt(fd.get('hembras'), 10) || 0);
+    const machosCapados = Math.min(machos, Math.max(0, parseInt(fd.get('machosCapados'), 10) || 0));
+    const planInnosure = Number(fd.get('planInnosure')) || PLAN_INNOSURE_POR_DEFECTO;
+
+    const vivos = calcularEstadisticasLote(lote)?.cantidadActual ?? lote.cantidad;
+    if (machos + hembras !== vivos) {
+      return mostrarAlerta('Revisá la composición', `Registraste ${machos} machos y ${hembras} hembras (${machos + hembras}), pero en este corral hay ${vivos} cerdos vivos.`);
+    }
+
+    const loteActualizado = { ...lote, machos, hembras, machosCapados, planInnosure };
+    const machosEnteros = machos - machosCapados;
+    const plan = INNOSURE_PLANS[planInnosure] || INNOSURE_PLANS[PLAN_INNOSURE_POR_DEFECTO];
+    const dias = { 1: plan.primeraDosisDia, 2: plan.segundaDosisDia };
+
+    // Las dosis ya aplicadas no se pisan; solo se reprograman las pendientes.
+    const aplicadas = safeArr(listTareasSanidad).filter(t => t.loteId === lote.id && t.innosureDosis && t.estado === 'hecho');
+    const nuevasDosis = machosEnteros > 0
+      ? PROTOCOLO_INNOSURE
+        .filter(t => !aplicadas.some(a => Number(a.innosureDosis) === t.innosureDosis))
+        .map(t => construirTarea(loteActualizado, t, dias[t.innosureDosis], {
+          innosureDosis: t.innosureDosis,
+          rango: `Semana ${Math.round(dias[t.innosureDosis] / 7)}`,
+          producto: `${t.producto} (${machosEnteros} animales)`
+        }))
+      : [];
+
+    try {
+      await runFarmUpdates({
+        agro_lotes: current => safeArr(current).map(l => l.id === lote.id ? loteActualizado : l),
+        agro_tareassanidad: current => [
+          ...safeArr(current).filter(t => !(t.loteId === lote.id && t.innosureDosis && t.estado !== 'hecho')),
+          ...nuevasDosis
+        ]
+      });
+      mostrarAlerta(
+        'Composición guardada',
+        machosEnteros > 0
+          ? `${machosEnteros} machos enteros. Se programaron las dosis de Innosure del plan de ${planInnosure} semanas.`
+          : 'Sin machos enteros: este lote no necesita Innosure.',
+        'success'
+      );
+    } catch (error) {
+      console.error('Error guardando composición:', error);
+      mostrarAlerta('Error', 'No se pudo guardar la composición del lote.');
+    }
+  };
+
+  // Registrar una dosis con su fecha REAL, que puede ser muy anterior a hoy. Sin esto,
+  // marcar una dosis aplicada con atraso le pone la fecha de hoy y corre la venta.
+  const guardarDosisInnosure = (lote, numero, fecha, { aplicada }) => {
+    if (!lote || !fecha) return mostrarAlerta('Falta la fecha', 'Elegí la fecha en que se aplicó la dosis.');
+
+    const plan = getPlanInnosure(lote);
+    if (aplicada) {
+      const validacion = validarFechaDosis({
+        numero,
+        fecha,
+        fechaPrimeraDosis: numero === 2 ? plan.primeraDosis?.fechaReal : null
+      });
+      if (!validacion.valida) return mostrarAlerta('No se puede registrar esa fecha', validacion.mensaje);
+    }
+
+    const dia = Math.max(0, Math.round(
+      ((parseLocalDate(fecha) || new Date()) - (parseLocalDate(lote.fechaIngreso) || new Date())) / 86400000
+    ));
+
+    setTareasSanidad(prev => {
+      const lista = safeArr(prev);
+      const existente = lista.find(t => t.loteId === lote.id && Number(t.innosureDosis) === numero);
+      const parche = {
+        dia,
+        fechaObjetivo: fecha,
+        rango: `Semana ${Math.round(dia / 7)}`,
+        estado: aplicada ? 'hecho' : 'pendiente',
+        completadoEn: aplicada ? fecha : null
+      };
+
+      if (existente) return lista.map(t => t.id === existente.id ? { ...t, ...parche } : t);
+
+      const base = PROTOCOLO_INNOSURE.find(p => p.innosureDosis === numero);
+      return [...lista, construirTarea(lote, base, dia, { innosureDosis: numero, ...parche })];
     });
-    return candidato ? (inventarioMedico.find(m => m.id === candidato.id) || candidato) : null;
+
+    mostrarAlerta(
+      aplicada ? 'Dosis registrada' : 'Fecha reprogramada',
+      aplicada
+        ? `${numero}ª dosis de Innosure aplicada el ${fecha}.`
+        : `La ${numero}ª dosis queda programada para el ${fecha}.`,
+      'success'
+    );
   };
 
-  const todayIso = () => new Date().toISOString().split('T')[0];
+  const desmarcarDosisInnosure = (lote, numero) => {
+    pedirConfirmacion('Desmarcar dosis', `¿Marcar la ${numero}ª dosis como pendiente otra vez? Se borra la fecha de aplicación registrada.`, () => {
+      setTareasSanidad(prev => safeArr(prev).map(t => (
+        t.loteId === lote.id && Number(t.innosureDosis) === numero
+          ? { ...t, estado: 'pendiente', completadoEn: null }
+          : t
+      )));
+    });
+  };
+
+  // Reemplaza las dosis teóricas que generó la app por las fechas reales del plan de
+  // corrales. Solo toca las dosis de Innosure de esos corrales; el resto queda igual.
+  const handleImportarInnosureDelExcel = () => {
+    const previstas = [];
+    for (const fila of IMPORTACION_INNOSURE_EXCEL) {
+      const corral = listCorrales.find(c => c.nombre === fila.corral);
+      const lote = corral && listLotes.find(l => l.corralId === corral.id && l.estado === 'Activo');
+      if (!lote) continue;
+      fila.dosis.forEach((d, i) => previstas.push({ lote, numero: i + 1, ...d }));
+    }
+
+    if (previstas.length === 0) {
+      return mostrarAlerta('Sin corrales que importar', 'No se encontraron lotes activos para los corrales del plan.');
+    }
+
+    const aplicadas = previstas.filter(p => p.aplicada).length;
+    pedirConfirmacion(
+      'Importar fechas del plan de corrales',
+      `Se van a escribir ${previstas.length} dosis de Innosure en ${new Set(previstas.map(p => p.lote.id)).size} corrales (${aplicadas} ya aplicadas y ${previstas.length - aplicadas} pendientes). Reemplaza las fechas teóricas que generó la app. No toca ningún otro registro.`,
+      () => {
+        setTareasSanidad(prev => {
+          const lista = safeArr(prev);
+          const idsAfectados = new Set(previstas.map(p => p.lote.id));
+          // Se conserva todo menos las dosis de Innosure de los corrales importados.
+          const resto = lista.filter(t => !(t.innosureDosis && idsAfectados.has(t.loteId)));
+
+          const nuevas = previstas.map(({ lote, numero, fecha, aplicada }) => {
+            const anterior = lista.find(t => t.loteId === lote.id && Number(t.innosureDosis) === numero);
+            const dia = Math.max(0, Math.round(
+              ((parseLocalDate(fecha) || new Date()) - (parseLocalDate(lote.fechaIngreso) || new Date())) / 86400000
+            ));
+            const base = PROTOCOLO_INNOSURE.find(p => p.innosureDosis === numero);
+            return {
+              ...construirTarea(lote, base, dia, { innosureDosis: numero }),
+              // Se reutiliza el id anterior para no dejar huérfano ningún registro ligado.
+              id: anterior?.id || crypto.randomUUID(),
+              fechaObjetivo: fecha,
+              rango: `Semana ${Math.round(dia / 7)}`,
+              estado: aplicada ? 'hecho' : 'pendiente',
+              completadoEn: aplicada ? fecha : null,
+              observacion: anterior?.observacion || ''
+            };
+          });
+
+          return [...resto, ...nuevas];
+        });
+
+        mostrarAlerta('Fechas importadas', `${previstas.length} dosis actualizadas con las fechas reales del plan de corrales.`, 'success');
+      }
+    );
+  };
+
+  const renderDosisInnosure = (lote, dosis) => {
+    const fmtCorto = (f) => f ? new Date(`${f}T00:00:00`).toLocaleDateString('es-GT', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+    const valorPorDefecto = dosis.fechaReal || dosis.fechaProyectada || dosis.fechaSugerida || todayIso();
+
+    return (
+      <div key={dosis.numero} className={`border rounded-xl p-3.5 ${dosis.aplicada ? 'bg-emerald-50/50 border-emerald-200' : dosis.vencida ? 'bg-rose-50/40 border-rose-200' : 'bg-white border-slate-100'}`}>
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">{dosis.numero}ª dosis</p>
+          {dosis.aplicada
+            ? <span className="text-[9px] font-black uppercase text-emerald-700 bg-emerald-100 border border-emerald-200 px-1.5 py-0.5 rounded">Aplicada</span>
+            : dosis.vencida
+              ? <span className="text-[9px] font-black uppercase text-rose-700 bg-rose-100 border border-rose-200 px-1.5 py-0.5 rounded">{dosis.diasDeAtraso}d tarde</span>
+              : <span className="text-[9px] font-black uppercase text-slate-400">Pendiente</span>}
+        </div>
+
+        <p className={`font-extrabold text-sm mt-1 ${dosis.aplicada ? 'text-emerald-700' : 'text-slate-800'}`}>
+          {fmtCorto(dosis.fechaReal || dosis.fechaProyectada || dosis.fechaSugerida)}
+        </p>
+        {!dosis.aplicada && dosis.fechaMinima && (
+          <p className="text-[10px] text-slate-400 font-medium mt-0.5">No antes del {fmtCorto(dosis.fechaMinima)}</p>
+        )}
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            guardarDosisInnosure(lote, dosis.numero, fd.get('fecha'), { aplicada: e.nativeEvent.submitter?.value === 'aplicada' });
+          }}
+          className="mt-2.5 pt-2.5 border-t border-slate-100 space-y-2"
+        >
+          <input type="date" name="fecha" defaultValue={valorPorDefecto} key={valorPorDefecto} className="w-full p-2 border border-slate-200 rounded-lg bg-white text-[11px] font-bold outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" />
+          <div className="flex gap-1.5">
+            {dosis.aplicada ? (
+              <>
+                <button type="submit" value="aplicada" className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-1.5 rounded-lg text-[10px] uppercase tracking-wider transition-colors">Corregir fecha</button>
+                <button type="button" onClick={() => desmarcarDosisInnosure(lote, dosis.numero)} className="px-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-400 hover:text-rose-500 rounded-lg text-[10px] transition-colors" title="Marcar como pendiente">✕</button>
+              </>
+            ) : (
+              <>
+                <button type="submit" value="aplicada" className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-1.5 rounded-lg text-[10px] uppercase tracking-wider transition-colors">Registrar aplicada</button>
+                <button type="submit" value="programada" className="px-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 font-bold rounded-lg text-[10px] transition-colors" title="Solo cambiar la fecha programada">Reprogramar</button>
+              </>
+            )}
+          </div>
+        </form>
+      </div>
+    );
+  };
+
+  const renderComposicionLote = (lote) => {
+    if (!lote) return null;
+    const plan = getPlanInnosure(lote);
+    const fmt = (f) => f ? new Date(`${f}T00:00:00`).toLocaleDateString('es-GT', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+
+    return (
+      <div className={`p-5 rounded-2xl border shadow-sm mb-2 ${plan.sexoRegistrado ? 'bg-indigo-50/30 border-indigo-100' : 'bg-amber-50/40 border-amber-200'}`}>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-1.5"><Syringe size={18} className="text-indigo-600" /> Composición del lote e Innosure</h3>
+            <p className="text-[11px] text-slate-500 font-medium mt-0.5 leading-relaxed">
+              {plan.sexoRegistrado
+                ? 'Solo los machos sin capar necesitan Innosure.'
+                : 'Registrá cuántos son machos y hembras para que la app pueda programar el Innosure de este lote.'}
+            </p>
+          </div>
+          {plan.aplica && (
+            <span className={`text-[9px] font-black uppercase tracking-wider border px-2.5 py-1 rounded-lg shrink-0 ${plan.puedeVender ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-rose-100 text-rose-700 border-rose-200'}`}>
+              {plan.puedeVender ? 'Venta habilitada' : 'Venta bloqueada'}
+            </span>
+          )}
+        </div>
+
+        <form onSubmit={(e) => handleGuardarComposicion(lote, e)} className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end font-semibold">
+          <div>
+            <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1 text-[9px]">Machos</label>
+            <input type="number" name="machos" min="0" defaultValue={lote.machos || 0} className="w-full p-2.5 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-bold" />
+          </div>
+          <div>
+            <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1 text-[9px]">Hembras</label>
+            <input type="number" name="hembras" min="0" defaultValue={lote.hembras || 0} className="w-full p-2.5 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-bold" />
+          </div>
+          <div>
+            <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1 text-[9px]">Capados</label>
+            <input type="number" name="machosCapados" min="0" defaultValue={lote.machosCapados || 0} className="w-full p-2.5 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-bold" />
+          </div>
+          <div>
+            <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1 text-[9px]">Plan</label>
+            <select name="planInnosure" defaultValue={lote.planInnosure || PLAN_INNOSURE_POR_DEFECTO} className="w-full p-2.5 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-bold">
+              <option value={22}>22 semanas</option>
+              <option value={20}>20 semanas</option>
+            </select>
+          </div>
+          <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-black py-2.5 rounded-xl transition-colors uppercase tracking-wider text-[10px] shadow-md">Guardar</button>
+        </form>
+        <p className="text-[10px] text-slate-400 font-medium mt-2">Deben sumar los {plan.total} cerdos vivos que hay hoy en el corral. Las dosis ya aplicadas no se reprograman.</p>
+
+        {plan.aplica && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4 pt-4 border-t border-indigo-100">
+            {[plan.primeraDosis, plan.segundaDosis].map((dosis) => renderDosisInnosure(lote, dosis))}
+            <div className={`border rounded-xl p-3 ${plan.puedeVender ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'}`}>
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Salida proyectada</p>
+              <p className={`font-extrabold text-xs mt-1 ${plan.puedeVender ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {plan.puedeVender ? 'Habilitada ya' : fmt(plan.salidaSugerida)}
+              </p>
+              <p className="text-[10px] text-slate-500 font-medium mt-0.5 leading-snug">
+                {plan.puedeVender
+                  ? 'Se cumplieron las 3 semanas'
+                  : plan.diasParaPoderVender > 0
+                    ? `Faltan ${plan.diasParaPoderVender} días`
+                    : 'Según las dosis proyectadas'}
+              </p>
+              {plan.diasDeAtrasoSalida > 0 && (
+                <p className="text-[10px] text-rose-700 font-bold mt-1.5 pt-1.5 border-t border-rose-200/60 leading-snug">
+                  {plan.diasDeAtrasoSalida} días después del plan ({fmt(plan.salidaTeorica)})
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {plan.aplica && plan.modoFlexible && (
+          <p className="text-[11px] text-amber-800 bg-amber-100/70 border border-amber-200 rounded-lg px-3 py-2 mt-3 font-medium leading-relaxed">
+            <strong>Lote atrasado.</strong> Se está usando el plan flexible de <strong>3 semanas entre dosis</strong> en vez de las 6 del estándar, para no correr más la salida.
+            Confirmalo con tu veterinario para este producto. El mínimo absoluto sigue siendo 2 semanas entre dosis y 3 semanas de la 2ª a la venta.
+          </p>
+        )}
+
+        {plan.descuadreSexo && (
+          <p className="text-[11px] text-amber-800 bg-amber-100/70 border border-amber-200 rounded-lg px-3 py-2 mt-3 font-medium">
+            El desglose por sexo suma {plan.machos + plan.hembras} pero hoy hay {plan.total} cerdos vivos en el corral.
+          </p>
+        )}
+      </div>
+    );
+  };
+
+  // Sincronizacion NO destructiva: agrega lo que falta, reprograma lo pendiente y limpia
+  // lo huerfano, pero jamas borra ni mueve una tarea ya aplicada. Las fechas reales de
+  // las dosis de Innosure son las que habilitan la venta: perderlas no es una opcion.
+  const aplicarSincronizacionProtocolo = (lotes, { silencioso = false, pasos = null } = {}) => {
+    const objetivo = safeArr(lotes).filter(Boolean);
+    if (objetivo.length === 0) return;
+
+    // `pasos` se pasa explicito cuando se acaba de editar el protocolo: el estado de
+    // React todavia no refleja el cambio en este tick.
+    const pasosVigentes = pasos || listProtocoloSanitario;
+
+    const planes = objetivo.map(lote => ({
+      lote,
+      plan: planificarSincronizacion({
+        lote,
+        pasosProtocolo: pasosVigentes,
+        tareasActuales: listTareasSanidad,
+        totalVivos: calcularEstadisticasLote(lote)?.cantidadActual ?? null
+      })
+    }));
+
+    const totales = planes.reduce((acc, { plan }) => ({
+      agregadas: acc.agregadas + plan.agregar.length,
+      reprogramadas: acc.reprogramadas + plan.reprogramar.length,
+      eliminadas: acc.eliminadas + plan.eliminar.length,
+      conservadas: acc.conservadas + plan.conservar.filter(t => t.estado === 'hecho').length
+    }), { agregadas: 0, reprogramadas: 0, eliminadas: 0, conservadas: 0 });
+
+    if (totales.agregadas === 0 && totales.reprogramadas === 0 && totales.eliminadas === 0) {
+      if (!silencioso) mostrarAlerta('Todo al día', 'El calendario sanitario ya refleja el protocolo vigente.', 'success');
+      return;
+    }
+
+    const idsAEliminar = new Set(planes.flatMap(({ plan }) => plan.eliminar.map(t => t.id)));
+    const reprogramaciones = new Map(
+      planes.flatMap(({ plan }) => plan.reprogramar.map(r => [r.tarea.id, r]))
+    );
+
+    const nuevas = planes.flatMap(({ lote, plan }) => plan.agregar.map(item => {
+      if (item.innosureDosis) {
+        const base = PROTOCOLO_INNOSURE.find(p => p.innosureDosis === item.innosureDosis);
+        return construirTarea(lote, base, item.dia, {
+          innosureDosis: item.innosureDosis,
+          rango: `Semana ${Math.round(item.dia / 7)}`,
+          producto: `${base.producto} (${item.machosEnteros} animales)`
+        });
+      }
+      return construirTarea(lote, item.paso, item.dia);
+    }));
+
+    setTareasSanidad(prev => [
+      ...safeArr(prev)
+        .filter(t => !idsAEliminar.has(t.id))
+        .map(t => {
+          const cambio = reprogramaciones.get(t.id);
+          return cambio ? { ...t, dia: cambio.dia, fechaObjetivo: cambio.fechaObjetivo } : t;
+        }),
+      ...nuevas
+    ]);
+
+    if (!silencioso) {
+      const partes = [
+        totales.agregadas > 0 && `${totales.agregadas} tarea${totales.agregadas === 1 ? '' : 's'} agregada${totales.agregadas === 1 ? '' : 's'}`,
+        totales.reprogramadas > 0 && `${totales.reprogramadas} reprogramada${totales.reprogramadas === 1 ? '' : 's'}`,
+        totales.eliminadas > 0 && `${totales.eliminadas} huérfana${totales.eliminadas === 1 ? '' : 's'} eliminada${totales.eliminadas === 1 ? '' : 's'}`
+      ].filter(Boolean);
+      mostrarAlerta(
+        'Calendario sanitario actualizado',
+        `${partes.join(', ')}. Las ${totales.conservadas} tareas ya aplicadas quedaron intactas.`,
+        'success'
+      );
+    }
+  };
+
+  const handleSincronizarProtocoloLote = (lote) => aplicarSincronizacionProtocolo([lote]);
+
+  // --- ACCIONES DE HOY ---
+  // Junta en una sola lista todo lo que hay que hacer, ordenado por urgencia y por plata.
+  // Cada accion sabe a que pantalla llevar, para que desde el galpon sea un solo toque.
+  const accionesDeHoy = useMemo(() => {
+    const hoy = todayIso();
+    const acciones = [];
+    const diasHasta = (fecha) => {
+      const d = parseLocalDate(fecha);
+      const h = parseLocalDate(hoy);
+      return (d && h) ? Math.round((d - h) / 86400000) : null;
+    };
+
+    const irA = (corral, tab) => () => {
+      setCorralSeleccionado(corral);
+      setTabActiva(tab);
+      setVista('corral');
+      setIsSidebarOpen(false);
+    };
+
+    for (const lote of listLotes.filter(l => l.estado === 'Activo')) {
+      const corral = listCorrales.find(c => c.id === lote.corralId);
+      if (!corral) continue;
+      const nombre = corral.nombre;
+      const stats = calcularEstadisticasLote(lote);
+      const plan = getPlanInnosure(lote);
+      if (!stats) continue;
+
+      // 1. Vender: el lote ya esta en peso y sanitariamente habilitado.
+      const enPeso = stats.pesoParaProyeccion >= stats.pesoObjetivoLb || stats.excedeCicloCompleto;
+      if (enPeso && plan.puedeVender) {
+        acciones.push({
+          id: `vender_${lote.id}`, grupo: 'atrasado', prioridad: 1, icono: '💰', corral: nombre,
+          titulo: 'Listo para vender',
+          detalle: `${stats.cantidadActual} cerdos · ${formatPesoLb(stats)} · ${stats.consumoCicloPorcentaje.toFixed(0)}% del ciclo consumido`,
+          nota: stats.excedeCicloCompleto ? 'Cada día extra es alimento perdido' : null,
+          accion: irA(corral, 'finanzas'), etiqueta: 'Ver finanzas'
+        });
+      }
+
+      // 2. Dosis de Innosure vencidas o proximas.
+      if (plan.aplica) {
+        [plan.primeraDosis, plan.segundaDosis].forEach(dosis => {
+          if (!dosis || dosis.aplicada) return;
+          if (dosis.numero === 2 && !dosis.habilitada) return;
+          const fecha = dosis.fechaReal || dosis.fechaSugerida;
+          const dias = diasHasta(fecha);
+          if (dias === null || dias > 7) return;
+          acciones.push({
+            id: `dosis_${lote.id}_${dosis.numero}`,
+            grupo: dias < 0 ? 'atrasado' : dias === 0 ? 'hoy' : 'semana',
+            prioridad: 2, icono: '🔵', corral: nombre,
+            titulo: `${dosis.numero}ª dosis de Innosure`,
+            detalle: dias < 0 ? `Tocaba hace ${Math.abs(dias)} días (${fecha})` : dias === 0 ? 'Toca hoy' : `En ${dias} días (${fecha})`,
+            nota: dosis.numero === 2 ? 'La venta se habilita 3 semanas después' : null,
+            accion: irA(corral, 'sanidad'), etiqueta: 'Registrar'
+          });
+        });
+      }
+
+      // 3. Pesaje vencido: sin pesar no hay proyeccion confiable.
+      if (stats.pesajeVencido) {
+        acciones.push({
+          id: `pesar_${lote.id}`,
+          grupo: stats.diasSinPesaje > 45 ? 'atrasado' : 'semana',
+          prioridad: 3, icono: '⚖️', corral: nombre,
+          titulo: 'Pesar el lote',
+          detalle: stats.sinPesajes ? 'Nunca se ha pesado' : `${stats.diasSinPesaje} días sin pesar · se estima ${formatPesoLb(stats)}`,
+          accion: irA(corral, 'peso'), etiqueta: 'Registrar peso'
+        });
+      }
+
+      // 4. Sobre-engorde sin poder vender todavia: hay que apurar el tramite sanitario.
+      if (stats.excedeCicloCompleto && !plan.puedeVender) {
+        acciones.push({
+          id: `sobre_${lote.id}`, grupo: 'atrasado', prioridad: 1, icono: '⚠️', corral: nombre,
+          titulo: 'Sobre-engorde con venta bloqueada',
+          detalle: `${stats.consumoCicloPorcentaje.toFixed(0)}% del ciclo consumido`,
+          nota: plan.motivoBloqueo,
+          accion: irA(corral, 'sanidad'), etiqueta: 'Ver Innosure'
+        });
+      }
+
+      // 5. Parametros de negocio sin configurar.
+      if (stats.parametrosIncompletos) {
+        acciones.push({
+          id: `param_${lote.id}`, grupo: 'semana', prioridad: 5, icono: '⚙️', corral: nombre,
+          titulo: 'Faltan precio y costo',
+          detalle: 'Sin estos datos la rentabilidad de este lote no significa nada',
+          accion: irA(corral, 'finanzas'), etiqueta: 'Configurar'
+        });
+      }
+    }
+
+    // 6. Tareas del protocolo vencidas o de hoy.
+    for (const tarea of safeArr(listTareasSanidad)) {
+      if ((tarea.estado || 'pendiente') !== 'pendiente' || tarea.innosureDosis) continue;
+      const lote = listLotes.find(l => l.id === tarea.loteId);
+      if (!lote || lote.estado !== 'Activo') continue;
+      const corral = listCorrales.find(c => c.id === lote.corralId);
+      const dias = diasHasta(tarea.fechaObjetivo);
+      if (dias === null || dias > 7) continue;
+      acciones.push({
+        id: `tarea_${tarea.id}`,
+        grupo: dias < 0 ? 'atrasado' : dias === 0 ? 'hoy' : 'semana',
+        prioridad: 4, icono: CLASES_MEDICAMENTO[claseDeMedicamento(tarea)]?.emoji || '🩺',
+        corral: corral?.nombre || 'Corral', titulo: tarea.tarea,
+        detalle: dias < 0 ? `Atrasada ${Math.abs(dias)} días` : dias === 0 ? 'Toca hoy' : `En ${dias} días`,
+        nota: tarea.pesoEsperado ? `Peso esperado: ${tarea.pesoEsperado}` : null,
+        accionRapida: () => handleActualizarTareaSanidad(tarea.id, { estado: 'hecho' }),
+        accion: corral ? irA(corral, 'sanidad') : null, etiqueta: 'Marcar hecha'
+      });
+    }
+
+    const orden = { atrasado: 0, hoy: 1, semana: 2 };
+    return acciones.sort((a, b) =>
+      (orden[a.grupo] - orden[b.grupo]) || (a.prioridad - b.prioridad) || a.corral.localeCompare(b.corral)
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listLotes, listCorrales, listTareasSanidad, listBajas, listAlimentos, listVentas, listPesos, listVacunas, listGastosExtra]);
+
+  // Corrales activos a los que les falta alguna tarea del protocolo. En vez de un boton
+  // abstracto de "sincronizar", el calendario muestra exactamente qué falta.
+  const corralesSinCalendario = useMemo(() => listLotes
+    .filter(l => l.estado === 'Activo')
+    .map(lote => {
+      const plan = planificarSincronizacion({
+        lote,
+        pasosProtocolo: listProtocoloSanitario,
+        tareasActuales: listTareasSanidad,
+        totalVivos: calcularEstadisticasLote(lote)?.cantidadActual ?? null
+      });
+      if (plan.sinCambios) return null;
+      return {
+        lote,
+        nombre: listCorrales.find(c => c.id === lote.corralId)?.nombre || 'Corral',
+        faltan: plan.agregar.length,
+        sobran: plan.eliminar.length
+      };
+    })
+    .filter(Boolean),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [listLotes, listTareasSanidad, listCorrales, listProtocoloSanitario]);
+
+  const handleGenerarCalendariosFaltantes = () => {
+    aplicarSincronizacionProtocolo(corralesSinCalendario.map(c => c.lote));
+  };
+
 
   const handleAgregarEventoCalendario = (e) => {
     e.preventDefault();
@@ -1714,12 +2624,25 @@ ${JSON.stringify(contextoGranja)}`;
     e.preventDefault();
     const fd = new FormData(e.target);
     const fechaIng = fd.get('fechaIngreso');
+    const cantidad = parseInt(fd.get('cantidad'), 10);
+    const machos = Math.max(0, parseInt(fd.get('machos'), 10) || 0);
+    const hembras = Math.max(0, parseInt(fd.get('hembras'), 10) || 0);
+    const machosCapados = Math.min(machos, Math.max(0, parseInt(fd.get('machosCapados'), 10) || 0));
+
+    if (machos + hembras > 0 && machos + hembras !== cantidad) {
+      return mostrarAlerta('Revisá la composición', `Registraste ${machos} machos y ${hembras} hembras (${machos + hembras}), pero el lote es de ${cantidad} cerdos.`);
+    }
+
     const nl = {
       id: crypto.randomUUID(),
       corralId: corralSeleccionado.id,
       fechaIngreso: fechaIng,
-      cantidad: parseInt(fd.get('cantidad')),
+      cantidad,
       raza: fd.get('raza'),
+      machos,
+      hembras,
+      machosCapados,
+      planInnosure: Number(fd.get('planInnosure')) || PLAN_INNOSURE_POR_DEFECTO,
       estado: 'Activo',
       costoLechon: 0,
       precioVentaLibra: 0,
@@ -1739,6 +2662,7 @@ ${JSON.stringify(contextoGranja)}`;
           : safeArr(current),
         agro_tareassanidad: current => [...safeArr(current), ...tareasHeredadas]
       });
+      setIngresoMachos(0);
       setTabActiva('resumen');
     } catch (error) {
       console.error('Error creando lote:', error);
@@ -1919,7 +2843,13 @@ ${JSON.stringify(contextoGranja)}`;
 
   const prepararVentaLote = () => {
     const loteActivo = getLoteActivo(corralSeleccionado.id);
-    if (loteActivo) setVentaPrecio(loteActivo.precioVentaLibra || 0);
+    if (loteActivo) {
+      const planSanitario = getPlanInnosure(loteActivo);
+      if (!planSanitario.puedeVender) {
+        return mostrarAlerta('Venta bloqueada por Innosure', planSanitario.motivoBloqueo);
+      }
+      setVentaPrecio(loteActivo.precioVentaLibra || 0);
+    }
     setVentaPesos([]);
     setPesoInputVenta('');
     setVista('prepararVenta');
@@ -1936,6 +2866,13 @@ ${JSON.stringify(contextoGranja)}`;
     const statsActuales = calcularEstadisticasLote(loteActivo);
     if (ventaPesos.length > statsActuales.cantidadActual) {
       return mostrarAlerta("Atención", `Solo hay ${statsActuales.cantidadActual} cerdos vivos disponibles en este corral.`);
+    }
+
+    // Inocuidad alimentaria: un lote con machos enteros no puede salir a mercado antes
+    // de que se cumpla el periodo posterior a la 2a dosis de Innosure.
+    const planSanitario = getPlanInnosure(loteActivo);
+    if (!planSanitario.puedeVender) {
+      return mostrarAlerta('Venta bloqueada por Innosure', planSanitario.motivoBloqueo);
     }
 
     pedirConfirmacion("Confirmar Venta en Báscula", `¿Registrar la venta de ${ventaPesos.length} cerdos por un total de ${formatearMoneda(totalDinero)}?`, async () => {
@@ -1991,12 +2928,260 @@ ${JSON.stringify(contextoGranja)}`;
   };
 
   // --- RENDER: HISTORIAL DE LOTES ---
+  const renderInsumos = () => {
+    const lotesActivos = listLotes.filter(l => l.estado === 'Activo');
+    const valorTotal = inventarioInsumos.reduce((s, i) => s + i.valorStock, 0);
+    const bajos = inventarioInsumos.filter(i => i.bajoStock);
+    const movimientos = [
+      ...listComprasInsumos.map(c => ({ ...c, mov: 'entrada' })),
+      ...listUsosInsumos.map(u => ({ ...u, mov: 'salida' }))
+    ].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))).slice(0, 25);
+    const nombreCorral = (loteId) => {
+      const lote = listLotes.find(l => l.id === loteId);
+      return listCorrales.find(c => c.id === lote?.corralId)?.nombre || 'Corral';
+    };
+    const inputCls = 'w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 text-xs font-semibold outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500';
+    const labelCls = 'block text-slate-400 uppercase tracking-widest font-bold mb-1.5 text-[10px]';
+
+    return (
+      <div className="space-y-6 animate-in fade-in duration-300">
+        <p className="text-slate-500 text-sm">Viruta, cal, desinfectante y demás materiales. Se compran acá y se descuentan al asignarlos a un corral.</p>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-white border border-slate-200 rounded-2xl p-4">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Valor en bodega</p>
+            <p className="text-xl font-bold text-slate-900 mt-1">{formatearMoneda(valorTotal)}</p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-2xl p-4">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Tipos de insumo</p>
+            <p className="text-xl font-bold text-slate-900 mt-1">{inventarioInsumos.length}</p>
+          </div>
+          <div className={`border rounded-2xl p-4 ${bajos.length > 0 ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Bajo mínimo</p>
+            <p className={`text-xl font-bold mt-1 ${bajos.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>{bajos.length}</p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-2xl p-4">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Consumido</p>
+            <p className="text-xl font-bold text-slate-900 mt-1">{formatearMoneda(listUsosInsumos.reduce((s, u) => s + (Number(u.costo) || 0), 0))}</p>
+          </div>
+        </div>
+
+        <TablaInventarioBodega
+          titulo="Inventario Físico en Bodega"
+          encabezadoStock="Disponible"
+          vacio="No hay insumos en el catálogo todavía."
+          onEliminar={handleEliminarInsumoCatalogo}
+          filas={inventarioInsumos.map(item => ({
+            id: item.id,
+            nombre: item.nombre,
+            subtitulo: `costo prom. ${formatearMoneda(item.costoPromedio)}/${item.unidad}`,
+            tipo: item.categoria,
+            stock: `${item.stock.toFixed(item.stock % 1 === 0 ? 0 : 1)} ${item.unidad}`,
+            alerta: item.bajoStock,
+            notaStock: item.bajoStock ? `mínimo ${item.stockMinimo}` : null,
+            valor: formatearMoneda(item.valorStock)
+          }))}
+        />
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          {/* COMPRA */}
+          <form onSubmit={handleComprarInsumo} className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3.5">
+            <h3 className="font-bold text-slate-800 text-sm">Registrar compra</h3>
+            <div><label className={labelCls}>Insumo</label>
+              <select name="productoId" required className={inputCls}>
+                <option value="">Elegí un insumo...</option>
+                {listCatalogoInsumos.map(i => <option key={i.id} value={i.id}>{i.nombre} ({i.unidad})</option>)}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={labelCls}>Cantidad</label><input type="number" name="cantidad" step="0.01" min="0.01" required className={inputCls} /></div>
+              <div><label className={labelCls}>Costo total (Q)</label><input type="number" name="costoTotal" step="0.01" min="0" required className={inputCls} /></div>
+            </div>
+            <div><label className={labelCls}>Fecha</label><input type="date" name="fecha" required defaultValue={todayIso()} className={inputCls} /></div>
+            <div><label className={labelCls}>Proveedor (opcional)</label><input type="text" name="proveedor" className={inputCls} /></div>
+            <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl text-xs transition-colors">Registrar entrada</button>
+          </form>
+
+          {/* USO EN CORRAL */}
+          <form onSubmit={handleUsarInsumoEnCorral} className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3.5">
+            <h3 className="font-bold text-slate-800 text-sm">Asignar a un corral</h3>
+            <p className="text-[11px] text-slate-500 leading-relaxed">Descuenta del stock y carga el costo al lote como gasto operativo.</p>
+            <div><label className={labelCls}>Insumo</label>
+              <select name="productoId" required className={inputCls}>
+                <option value="">Elegí un insumo...</option>
+                {inventarioInsumos.filter(i => i.stock > 0).map(i => (
+                  <option key={i.id} value={i.id}>{i.nombre} — quedan {i.stock.toFixed(1)} {i.unidad}</option>
+                ))}
+              </select>
+            </div>
+            <div><label className={labelCls}>Corral</label>
+              <select name="loteId" required className={inputCls}>
+                <option value="">Elegí un corral...</option>
+                {lotesActivos.map(l => (
+                  <option key={l.id} value={l.id}>{listCorrales.find(c => c.id === l.corralId)?.nombre || 'Corral'}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={labelCls}>Cantidad</label><input type="number" name="cantidad" step="0.01" min="0.01" required className={inputCls} /></div>
+              <div><label className={labelCls}>Fecha</label><input type="date" name="fecha" required defaultValue={todayIso()} className={inputCls} /></div>
+            </div>
+            <div><label className={labelCls}>Nota (opcional)</label><input type="text" name="observacion" placeholder="Ej: cambio de cama" className={inputCls} /></div>
+            <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-xl text-xs transition-colors">Descontar y cargar al lote</button>
+          </form>
+
+          {/* CATÁLOGO */}
+          <form onSubmit={handleAgregarInsumoCatalogo} className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3.5">
+            <h3 className="font-bold text-slate-800 text-sm">Agregar tipo de insumo</h3>
+            <p className="text-[11px] text-slate-500 leading-relaxed">Configurá acá cualquier material nuevo que quieras controlar.</p>
+            <div><label className={labelCls}>Nombre</label><input type="text" name="nombre" required placeholder="Ej: Lazo de manejo" className={inputCls} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={labelCls}>Unidad</label><input type="text" name="unidad" placeholder="saco, galón, caja" className={inputCls} /></div>
+              <div><label className={labelCls}>Stock mínimo</label><input type="number" name="stockMinimo" step="0.1" min="0" defaultValue={0} className={inputCls} /></div>
+            </div>
+            <div><label className={labelCls}>Categoría</label><input type="text" name="categoria" placeholder="Cama, Bioseguridad, Manejo..." className={inputCls} /></div>
+            <button type="submit" className="w-full bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold py-2.5 rounded-xl text-xs transition-colors">Agregar al catálogo</button>
+          </form>
+        </div>
+
+        {/* MOVIMIENTOS */}
+        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100">
+            <h3 className="font-bold text-slate-800 text-sm">Últimos movimientos</h3>
+          </div>
+          {movimientos.length === 0 ? (
+            <p className="py-10 text-center text-slate-400 text-xs">Todavía no hay entradas ni salidas.</p>
+          ) : (
+            <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+              {movimientos.map(m => (
+                <div key={m.id} className="px-5 py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800 text-[13px]">{m.nombre}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {m.fecha} · {m.mov === 'entrada' ? (m.proveedor || 'Compra') : `a ${nombreCorral(m.loteId)}`}
+                      {m.observacion ? ` · ${m.observacion}` : ''}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className={`font-bold text-[13px] ${m.mov === 'entrada' ? 'text-emerald-600' : 'text-slate-600'}`}>
+                      {m.mov === 'entrada' ? '+' : '−'}{Number(m.cantidad).toFixed(1)} {m.unidad}
+                    </p>
+                    <p className="text-[11px] text-slate-400">{formatearMoneda(m.mov === 'entrada' ? m.costoTotal : m.costo)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderHoy = () => {
+    const GRUPOS = [
+      { clave: 'atrasado', titulo: 'Atrasado', color: 'text-rose-600', punto: 'bg-rose-500' },
+      { clave: 'hoy', titulo: 'Para hoy', color: 'text-amber-600', punto: 'bg-amber-500' },
+      { clave: 'semana', titulo: 'Esta semana', color: 'text-slate-500', punto: 'bg-slate-400' }
+    ];
+    const fecha = new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' });
+    const atrasadas = accionesDeHoy.filter(a => a.grupo === 'atrasado').length;
+
+    return (
+      <div className="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto animate-in fade-in duration-500">
+        <div className="mb-6">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">{fecha}</p>
+          <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mt-1">
+            {accionesDeHoy.length === 0 ? 'Todo al día' : `${accionesDeHoy.length} ${accionesDeHoy.length === 1 ? 'cosa' : 'cosas'} por hacer`}
+          </h2>
+          {atrasadas > 0 && (
+            <p className="text-sm text-rose-600 font-semibold mt-1">{atrasadas} {atrasadas === 1 ? 'atrasada' : 'atrasadas'}</p>
+          )}
+        </div>
+
+        {accionesDeHoy.length === 0 ? (
+          <div className="bg-emerald-50/50 border border-emerald-200 rounded-2xl p-8 text-center">
+            <CheckCircle size={40} className="text-emerald-500 mx-auto mb-3" />
+            <p className="font-bold text-emerald-900">No hay nada pendiente</p>
+            <p className="text-sm text-emerald-700/70 mt-1">Ningún corral necesita atención en los próximos 7 días.</p>
+          </div>
+        ) : (
+          <div className="space-y-7">
+            {GRUPOS.map(grupo => {
+              const items = accionesDeHoy.filter(a => a.grupo === grupo.clave);
+              if (items.length === 0) return null;
+              return (
+                <section key={grupo.clave}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className={`w-1.5 h-1.5 rounded-full ${grupo.punto}`} />
+                    <h3 className={`text-[11px] font-bold uppercase tracking-widest ${grupo.color}`}>{grupo.titulo}</h3>
+                    <span className="text-[11px] font-semibold text-slate-300">{items.length}</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {items.map(item => (
+                      <div key={item.id} className="bg-white border border-slate-200 rounded-2xl p-4 flex items-start gap-3.5">
+                        <span className="text-xl leading-none mt-0.5 shrink-0">{item.icono}</span>
+
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[11px] font-semibold text-slate-400">{item.corral}</p>
+                          <p className="font-bold text-slate-900 text-sm leading-snug mt-0.5">{item.titulo}</p>
+                          <p className="text-[13px] text-slate-500 leading-snug mt-1">{item.detalle}</p>
+                          {item.nota && <p className="text-[12px] text-slate-400 leading-snug mt-1.5">{item.nota}</p>}
+
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            {item.accionRapida && (
+                              <button type="button" onClick={item.accionRapida} className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-[12px] font-semibold px-3.5 py-2 rounded-xl transition-colors">
+                                {item.etiqueta}
+                              </button>
+                            )}
+                            {item.accion && (
+                              <button type="button" onClick={item.accion} className="bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 text-[12px] font-semibold px-3.5 py-2 rounded-xl transition-colors">
+                                {item.accionRapida ? 'Abrir corral' : item.etiqueta}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderDashboard = () => {
     const totalSacosBodegaCentral = inventarioCentral.reduce((acc, item) => acc + item.stockSacos, 0);
 
     const alertasCambio = listLotes.filter(l => l.estado === 'Activo').map(lote => {
       const corral = listCorrales.find(c => c.id === lote.corralId);
       const stats = calcularEstadisticasLote(lote);
+
+      const nombreCorral = corral ? corral.nombre : 'Corral';
+
+      // Sobre-engorde: el lote ya comio un ciclo completo y sigue en el corral.
+      if (stats.excedeCicloCompleto) {
+        return {
+          corralNombre: nombreCorral,
+          alertaEspecial: true,
+          severidad: 'critical',
+          mensaje: `Ya consumió el ${stats.consumoCicloPorcentaje.toFixed(0)}% del alimento de un ciclo completo (${stats.consumoPorCerdoLb.toFixed(0)} lb/cerdo). Probablemente está en peso de venta y cada día extra es alimento perdido.`
+        };
+      }
+
+      // Pesaje vencido: sin pesar no hay proyeccion que valga.
+      if (stats.pesajeVencido) {
+        return {
+          corralNombre: nombreCorral,
+          alertaEspecial: true,
+          mensaje: stats.sinPesajes
+            ? 'Este lote no tiene ningún pesaje registrado. Las proyecciones no son confiables.'
+            : `${stats.diasSinPesaje} días sin pesar. Se está estimando ~${stats.pesoParaProyeccion.toFixed(0)} lb por consumo de alimento; registrá un pesaje real.`
+        };
+      }
 
       const faseActualNum = lote.faseActual || 1;
       const faseActual = CRONOGRAMA_ALIMENTACION.find(f => f.fase === faseActualNum);
@@ -2180,10 +3365,32 @@ ${JSON.stringify(contextoGranja)}`;
                         <div className="flex justify-between items-center">
                           <span className="text-slate-400 font-medium">Peso Promedio:</span>
                           <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                            {stats?.pesoActual} lb
+                            {stats?.pesoEsEstimado
+                              ? <span title={`Estimado por consumo. Último pesaje real: ${stats.pesoActual.toFixed(1)} lb hace ${stats.diasSinPesaje} días`}>~{stats.pesoParaProyeccion.toFixed(0)} lb</span>
+                              : <>{stats?.pesoActual} lb</>}
                             {stats?.estaListoParaMezclas && <Leaf size={14} className="text-emerald-500 filter drop-shadow-[0_0_4px_rgba(16,185,129,0.3)] animate-pulse" title="Listo para formulación" />}
                           </span>
                         </div>
+
+                        {(stats?.excedeCicloCompleto || stats?.pesajeVencido || stats?.parametrosIncompletos) && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {stats.excedeCicloCompleto && (
+                              <span className="bg-rose-100 text-rose-700 border border-rose-200 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wide" title={`Ya consumió ${stats.consumoCicloPorcentaje.toFixed(0)}% del alimento de un ciclo completo`}>
+                                {stats.consumoCicloPorcentaje.toFixed(0)}% del ciclo · ¿vender?
+                              </span>
+                            )}
+                            {stats.pesajeVencido && (
+                              <span className="bg-amber-100 text-amber-700 border border-amber-200 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wide">
+                                {stats.diasSinPesaje} días sin pesar
+                              </span>
+                            )}
+                            {stats.parametrosIncompletos && (
+                              <span className="bg-slate-200 text-slate-600 border border-slate-300 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wide" title="Falta precio de venta o costo del lechón">
+                                Sin parámetros
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="h-16 flex flex-col items-center justify-center text-slate-400/80 border border-dashed border-slate-100 rounded-xl bg-slate-50/20">
@@ -2246,9 +3453,9 @@ return (
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
             <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
-              <Archive className="mr-3 text-amber-500 filter drop-shadow-[0_0_8px_rgba(245,158,11,0.25)]" size={28} /> Bodega Central Unificada
+              <Archive className="mr-3 text-amber-500 filter drop-shadow-[0_0_8px_rgba(245,158,11,0.25)]" size={28} /> Bodega Central
             </h2>
-            <p className="text-slate-500 text-sm mt-1.5">Monitoreo de materias primas y generación automatizada de compras.</p>
+            <p className="text-slate-500 text-sm mt-1.5">Alimento, farmacia e insumos en un solo lugar.</p>
           </div>
           {bodegaVistaTab === 'alimento' && (
             <button onClick={() => descargarPDF('orden-compra-pdf', 'Orden_Compra_Granja.pdf')} className="bg-slate-950 hover:bg-slate-900 text-white font-bold py-2.5 px-5 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center shrink-0 self-start md:self-auto gap-2">
@@ -2264,7 +3471,17 @@ return (
           <button type="button" onClick={() => setBodegaVistaTab('farmacia')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'farmacia' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
             <Syringe size={16} /> Farmacia
           </button>
+          <button type="button" onClick={() => setBodegaVistaTab('insumos')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'insumos' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+            <Package size={16} /> Insumos
+            {inventarioInsumos.filter(i => i.bajoStock).length > 0 && (
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${bodegaVistaTab === 'insumos' ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'}`}>
+                {inventarioInsumos.filter(i => i.bajoStock).length}
+              </span>
+            )}
+          </button>
         </div>
+
+        {bodegaVistaTab === 'insumos' && renderInsumos()}
 
         {/* CONTENEDOR OCULTO PARA EL PDF DE ORDEN DE COMPRA */}
         <div className="absolute -left-[9999px]">
@@ -2571,7 +3788,7 @@ return (
             <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_4px_25px_rgb(0,0,0,0.005)] overflow-hidden">
               <div className="p-5 border-b border-slate-50 bg-slate-900 text-white flex items-center justify-between">
                 <h3 className="font-extrabold text-base">Inventario de Medicinas en Bodega</h3>
-                <span className="text-[10px] text-emerald-400/90 font-bold uppercase tracking-wider bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">Farmacia al Día</span>
+                <span className="text-[10px] text-emerald-400/90 font-bold uppercase tracking-wider bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">Tiempo Real</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left">
@@ -2692,10 +3909,31 @@ return (
           corralId: lote.corralId || '',
           corralNombre: corral?.nombre || 'Corral',
           tareaId: t.id,
-          observacion: t.observacion || ''
+          observacion: t.observacion || '',
+          pesoEsperado: t.pesoEsperado || '',
+          categoria: esTareaDeMedicamento(t) ? 'medicamento' : 'manejo',
+          innosureDosis: t.innosureDosis || null,
+          claseMedicamento: t.innosureDosis ? 'innosure' : claseDeMedicamento(t)
         };
       })
       .filter(Boolean);
+
+    // Fecha a partir de la cual cada lote con machos enteros ya se puede vender.
+    const eventosVentaHabilitada = lotesActivos.map(lote => {
+      const plan = getPlanInnosure(lote);
+      if (!plan.aplica || !plan.ventaHabilitadaDesde) return null;
+      const corral = listCorrales.find(c => c.id === lote.corralId);
+      return {
+        id: `innosure_ok_${lote.id}`,
+        tipo: 'ventaHabilitada',
+        fecha: plan.ventaHabilitadaDesde,
+        titulo: 'Venta habilitada',
+        detalle: `Se cumplen las 3 semanas desde la 2ª dosis de Innosure (${plan.segundaDosis.fechaReal})`,
+        corralId: lote.corralId || '',
+        corralNombre: corral?.nombre || 'Corral',
+        claseMedicamento: 'ventaOk'
+      };
+    }).filter(Boolean);
 
     const eventosVencimiento = inventarioMedico
       .filter(item => item.proximoVencimiento)
@@ -2711,8 +3949,8 @@ return (
 
     const eventosCierre = lotesActivos.map(lote => {
       const stats = calcularEstadisticasLote(lote);
-      if (stats.pesoActual <= 0 || stats.pesoActual >= stats.pesoObjetivoLb || stats.adg <= 0) return null;
-      const diasRestantes = Math.ceil((stats.pesoObjetivoLb - stats.pesoActual) / stats.adg);
+      if (stats.pesoParaProyeccion <= 0 || stats.pesoParaProyeccion >= stats.pesoObjetivoLb || stats.adg <= 0) return null;
+      const diasRestantes = Math.ceil((stats.pesoObjetivoLb - stats.pesoParaProyeccion) / stats.adg);
       if (diasRestantes < 0 || diasRestantes > 120) return null;
       const corral = listCorrales.find(c => c.id === lote.corralId);
       return {
@@ -2740,7 +3978,54 @@ return (
       };
     });
 
-    const todosLosEventos = [...eventosSanidad, ...eventosVencimiento, ...eventosCierre, ...eventosManuales]
+    // --- MATRIZ CORRAL x SEMANAS ---
+    // Solo medicamentos reales y la habilitacion de venta: lo que se calendariza de
+    // verdad en esta granja son sueros, desparasitacion e Innosure.
+    const SEMANAS_VISIBLES = 14;
+    const inicioSemana = (isoFecha) => {
+      const d = parseLocalDate(isoFecha);
+      if (!d) return null;
+      const diaSemana = (d.getDay() + 6) % 7; // lunes = 0
+      d.setDate(d.getDate() - diaSemana);
+      return d.toISOString().split('T')[0];
+    };
+
+    const semanaBase = inicioSemana(addDaysToIsoDate(hoy, -14));
+    const semanas = Array.from({ length: SEMANAS_VISIBLES }, (_, i) => {
+      const inicio = addDaysToIsoDate(semanaBase, i * 7);
+      const d = parseLocalDate(inicio);
+      return {
+        inicio,
+        fin: addDaysToIsoDate(inicio, 6),
+        etiquetaMes: d.toLocaleDateString('es-GT', { month: 'short' }).replace('.', ''),
+        dia: d.getDate(),
+        esActual: inicio === inicioSemana(hoy)
+      };
+    });
+
+    const eventosMatriz = [...eventosSanidad.filter(e => e.categoria === 'medicamento'), ...eventosVentaHabilitada]
+      .filter(e => e.fecha && (calendarioFiltroCorral === 'todos' || e.corralId === calendarioFiltroCorral));
+
+    const filasMatriz = listCorrales
+      .map(corral => {
+        const lote = lotesActivos.find(l => l.corralId === corral.id);
+        if (!lote) return null;
+        const plan = getPlanInnosure(lote);
+        const eventosDelCorral = eventosMatriz.filter(e => e.corralId === corral.id);
+        return {
+          corral,
+          lote,
+          plan,
+          celdas: semanas.map(sem => ({
+            ...sem,
+            eventos: eventosDelCorral.filter(e => e.fecha >= sem.inicio && e.fecha <= sem.fin)
+          }))
+        };
+      })
+      .filter(Boolean)
+      .filter(fila => calendarioFiltroCorral === 'todos' || fila.corral.id === calendarioFiltroCorral);
+
+    const todosLosEventos = [...eventosSanidad, ...eventosVencimiento, ...eventosCierre, ...eventosManuales, ...eventosVentaHabilitada]
       .filter(ev => ev.fecha)
       .map(ev => {
         const diffDias = Math.ceil((new Date(`${ev.fecha}T00:00:00`) - new Date(`${hoy}T00:00:00`)) / 86_400_000);
@@ -2759,8 +4044,130 @@ return (
       sanidad: { label: 'Sanidad', icon: Syringe, className: 'bg-rose-50 text-rose-600 border-rose-100', dot: 'bg-rose-500' },
       vencimiento: { label: 'Vencimiento', icon: AlertCircle, className: 'bg-amber-50 text-amber-600 border-amber-100', dot: 'bg-amber-500' },
       cierre: { label: 'Cierre de lote', icon: TrendingUp, className: 'bg-indigo-50 text-indigo-600 border-indigo-100', dot: 'bg-indigo-500' },
-      manual: { label: 'Personalizado', icon: Calendar, className: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'bg-slate-500' }
+      manual: { label: 'Personalizado', icon: Calendar, className: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'bg-slate-500' },
+      ventaHabilitada: { label: 'Venta habilitada', icon: CheckCircle, className: 'bg-emerald-50 text-emerald-600 border-emerald-100', dot: 'bg-emerald-500' }
     };
+
+    const renderMatrizMedicamentos = () => (
+      <div className="bg-white border border-slate-100 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.015)] overflow-hidden mb-6">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-extrabold text-slate-800 text-sm flex items-center gap-2"><Syringe size={17} className="text-indigo-500" /> Plan de medicamentos por corral</h3>
+            <p className="text-[11px] text-slate-400 font-medium mt-0.5">Sueros, desparasitación e Innosure. Cada columna es una semana.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {Object.entries(CLASES_MEDICAMENTO).filter(([k]) => k !== 'otro').map(([clave, meta]) => (
+              <span key={clave} className={`text-[10px] font-bold px-2 py-1 rounded-full border ${meta.chip}`}>{meta.emoji} {meta.label}</span>
+            ))}
+          </div>
+        </div>
+
+        {filasMatriz.length === 0 ? (
+          <div className="py-12 text-center text-slate-400 italic font-semibold text-xs">No hay corrales activos con medicamentos programados.</div>
+        ) : (
+          <>
+          {/* MÓVIL: la matriz no entra en un teléfono, así que se apila por corral. */}
+          <div className="lg:hidden divide-y divide-slate-100">
+            {filasMatriz.map(({ corral, plan, celdas }) => {
+              const proximos = celdas.flatMap(c => c.eventos).filter(e => e.fecha >= hoy).slice(0, 3);
+              const vencidos = celdas.flatMap(c => c.eventos).filter(e => e.fecha < hoy && e.tipo === 'sanidad');
+              return (
+                <button key={corral.id} onClick={() => { setCorralSeleccionado(corral); setVista('corral'); setTabActiva('sanidad'); }} className="w-full text-left p-4 active:bg-slate-50 transition-colors">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-bold text-slate-900 text-sm">{corral.nombre}</p>
+                    {plan.aplica && (
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${plan.puedeVender ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                        {plan.puedeVender ? 'Venta OK' : 'Venta bloqueada'}
+                      </span>
+                    )}
+                  </div>
+                  {vencidos.length > 0 && (
+                    <p className="text-[12px] text-rose-600 font-semibold mt-1.5">{vencidos.length} {vencidos.length === 1 ? 'atrasada' : 'atrasadas'}</p>
+                  )}
+                  {proximos.length === 0 ? (
+                    <p className="text-[12px] text-slate-400 mt-1.5">Sin aplicaciones próximas</p>
+                  ) : (
+                    <div className="space-y-1 mt-2">
+                      {proximos.map(ev => (
+                        <p key={ev.id} className="text-[12px] text-slate-600 flex items-center gap-2">
+                          <span>{(CLASES_MEDICAMENTO[ev.claseMedicamento] || CLASES_MEDICAMENTO.otro).emoji}</span>
+                          <span className="font-semibold">{new Date(`${ev.fecha}T00:00:00`).toLocaleDateString('es-GT', { day: '2-digit', month: 'short' })}</span>
+                          <span className="text-slate-400 truncate">{ev.titulo}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="hidden lg:block overflow-x-auto">
+            <table className="w-full border-collapse min-w-[900px]">
+              <thead>
+                <tr className="bg-slate-50/60">
+                  <th className="sticky left-0 z-10 bg-slate-50/60 text-left px-4 py-2.5 text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 w-44">Corral</th>
+                  {semanas.map(sem => (
+                    <th key={sem.inicio} className={`px-1 py-2.5 text-center border-b border-l border-slate-100 ${sem.esActual ? 'bg-emerald-50' : ''}`}>
+                      <span className={`block text-[9px] font-black uppercase tracking-wider ${sem.esActual ? 'text-emerald-600' : 'text-slate-400'}`}>{sem.etiquetaMes}</span>
+                      <span className={`block text-[11px] font-bold ${sem.esActual ? 'text-emerald-700' : 'text-slate-600'}`}>{sem.dia}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filasMatriz.map(({ corral, plan, celdas }) => (
+                  <tr key={corral.id} className="hover:bg-slate-50/40 transition-colors">
+                    <td className="sticky left-0 z-10 bg-white px-4 py-3 border-b border-slate-100">
+                      <button onClick={() => { setCorralSeleccionado(corral); setVista('corral'); setTabActiva('sanidad'); }} className="text-left group">
+                        <p className="font-bold text-slate-800 text-xs group-hover:text-emerald-600 transition-colors">{corral.nombre}</p>
+                        <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
+                          {plan.aplica
+                            ? <span className="text-indigo-600">{plan.machosEnteros} machos enteros</span>
+                            : plan.sexoRegistrado
+                              ? <span>{plan.machos}M · {plan.hembras}H · sin Innosure</span>
+                              : <span className="text-amber-600">Sin registrar sexo</span>}
+                        </p>
+                      </button>
+                    </td>
+                    {celdas.map(celda => (
+                      <td key={celda.inicio} className={`px-1 py-2 text-center border-b border-l border-slate-100 align-middle ${celda.esActual ? 'bg-emerald-50/40' : ''}`}>
+                        <div className="flex flex-col items-center gap-1">
+                          {celda.eventos.map(ev => {
+                            const meta = CLASES_MEDICAMENTO[ev.claseMedicamento] || CLASES_MEDICAMENTO.otro;
+                            return (
+                              <span
+                                key={ev.id}
+                                title={`${ev.corralNombre} · ${ev.fecha} · ${ev.titulo}${ev.detalle ? ` — ${ev.detalle}` : ''}`}
+                                className={`text-[13px] leading-none cursor-default ${ev.fecha < hoy && ev.tipo === 'sanidad' ? 'opacity-40 grayscale' : ''}`}
+                              >
+                                {meta.emoji}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          </>
+        )}
+
+        {filasMatriz.some(f => f.plan.aplica && !f.plan.puedeVender) && (
+          <div className="px-5 py-4 border-t border-slate-100 bg-amber-50/40 space-y-2">
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Ventas bloqueadas por Innosure</p>
+            {filasMatriz.filter(f => f.plan.aplica && !f.plan.puedeVender).map(f => (
+              <p key={f.corral.id} className="text-[11px] text-amber-900 font-medium leading-relaxed">
+                <strong>{f.corral.nombre}:</strong> {f.plan.motivoBloqueo}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    );
 
     const eventosPorFecha = todosLosEventos.reduce((acc, ev) => {
       if (!acc[ev.fecha]) acc[ev.fecha] = [];
@@ -2816,6 +4223,11 @@ return (
                 </div>
                 <p className="font-bold text-slate-800 text-sm leading-snug">{ev.titulo}</p>
                 {ev.detalle && <p className="text-xs text-slate-500 mt-0.5">{ev.detalle}</p>}
+                {ev.pesoEsperado && (
+                  <p className="text-[11px] text-slate-500 font-semibold mt-1">
+                    Peso esperado a esta edad: <span className="bg-slate-100 border border-slate-200 text-slate-700 px-1.5 py-0.5 rounded">{ev.pesoEsperado}</span>
+                  </p>
+                )}
                 <p className="text-[10px] text-slate-400 font-semibold mt-1">{ev.fecha}</p>
               </div>
             </div>
@@ -2849,13 +4261,13 @@ return (
     };
 
     return (
-      <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-5xl mx-auto animate-in fade-in duration-500">
+      <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl mx-auto animate-in fade-in duration-500">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
             <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2.5 leading-none">
               <Calendar size={28} className="text-emerald-500 filter drop-shadow-[0_0_8px_rgba(16,185,129,0.2)]" /> Calendario
             </h2>
-            <p className="text-slate-500 text-sm mt-1.5">Próximos eventos de todos los corrales: sanidad, vencimientos y cierres estimados.</p>
+            <p className="text-slate-500 text-sm mt-1.5">Qué medicamento le toca a cada corral y cuándo, más vencimientos y cierres estimados.</p>
           </div>
           <div className="grid grid-cols-3 gap-3 text-center sm:min-w-[320px]">
             <div className="bg-rose-50/50 border border-rose-100/50 rounded-xl px-4 py-2.5"><p className="text-lg font-black text-rose-600">{resumen.vencidos}</p><p className="text-[9px] font-bold uppercase text-slate-400 mt-0.5">Vencidos</p></div>
@@ -2875,6 +4287,7 @@ return (
               { value: 'sanidad', label: 'Sanidad' },
               { value: 'vencimiento', label: 'Vencimientos' },
               { value: 'cierre', label: 'Cierre de lote' },
+              { value: 'ventaHabilitada', label: 'Venta habilitada' },
               { value: 'manual', label: 'Personalizados' }
             ].map(op => (
               <button key={op.value} type="button" onClick={() => setCalendarioFiltroTipo(op.value)} className={`px-3 py-2 rounded-xl text-[11px] font-bold border transition-colors ${calendarioFiltroTipo === op.value ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}>
@@ -2883,6 +4296,57 @@ return (
             ))}
           </div>
         </div>
+
+        {corralesSinCalendario.length > 0 && (() => {
+          const totalAgregar = corralesSinCalendario.reduce((s, c) => s + c.faltan, 0);
+          const totalQuitar = corralesSinCalendario.reduce((s, c) => s + c.sobran, 0);
+          const visibles = corralesSinCalendario.slice(0, 4);
+          const restantes = corralesSinCalendario.length - visibles.length;
+
+          return (
+            <div className="bg-white border border-indigo-100 rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.015)] overflow-hidden">
+              <div className="p-5 flex flex-col lg:flex-row lg:items-center gap-5">
+                <div className="w-11 h-11 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0">
+                  <Syringe size={20} className="text-indigo-500" />
+                </div>
+
+                <div className="flex-1 min-w-0 space-y-2.5">
+                  <div>
+                    <p className="font-extrabold text-slate-800 text-sm leading-tight">Hay calendarios sanitarios por generar</p>
+                    <p className="text-[11px] text-slate-500 font-medium leading-relaxed mt-1">
+                      {[
+                        totalAgregar > 0 && <><strong key="a" className="text-emerald-600">{totalAgregar} tarea{totalAgregar === 1 ? '' : 's'}</strong> por programar</>,
+                        totalQuitar > 0 && <><strong key="q" className="text-slate-600">{totalQuitar}</strong> que ya no aplican</>
+                      ].filter(Boolean).reduce((prev, curr, i) => i === 0 ? [curr] : [...prev, ' · ', curr], [])}
+                      {'. '}Lo que ya se aplicó queda intacto.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {visibles.map(c => (
+                      <span key={c.lote.id} className="bg-slate-50 border border-slate-150 text-slate-600 text-[10px] font-bold px-2 py-1 rounded-lg">
+                        {c.nombre}
+                        {c.faltan > 0 && <span className="text-emerald-600 ml-1">+{c.faltan}</span>}
+                        {c.sobran > 0 && <span className="text-slate-400 ml-1">−{c.sobran}</span>}
+                      </span>
+                    ))}
+                    {restantes > 0 && (
+                      <span className="text-[10px] font-bold text-slate-400 px-1" title={corralesSinCalendario.slice(4).map(c => c.nombre).join(', ')}>
+                        y {restantes} más
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <button type="button" onClick={handleGenerarCalendariosFaltantes} className="bg-indigo-600 hover:bg-indigo-700 text-white font-black text-[11px] uppercase tracking-wider px-5 py-3 rounded-xl transition-colors shadow-md shadow-indigo-600/15 shrink-0">
+                  Generar lo que falta
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
+        {renderMatrizMedicamentos()}
 
         {eventosVencidos.length > 0 && (
           <div className="bg-rose-50/50 border border-rose-100 rounded-2xl p-5 space-y-3">
@@ -3159,7 +4623,7 @@ return (
                     </div>
                     <div className="flex justify-between items-center border-b border-slate-50 pb-2">
                       <span className="text-slate-500 font-medium">Conversión (FCA):</span>
-                      <span className="font-bold text-indigo-600">{st.fca.toFixed(2)}</span>
+                      <span className={`font-bold ${claseFca(st, 'text-indigo-600', 'text-orange-600')}`} title={tituloFca(st)}>{formatFca(st)}</span>
                     </div>
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 shadow-inner mt-2">
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Utilidad Neta del Lote</p>
@@ -3243,9 +4707,9 @@ return (
               { label: 'Lechones Iniciales', value: lote.cantidad || 0, color: 'text-slate-800' },
               { label: 'Cerdos Vendidos', value: soldCount, color: 'text-emerald-600' },
               { label: 'Mortalidad final', value: `${stats.mortalidadPorcentaje.toFixed(1)}%`, color: stats.mortalidadPorcentaje > 5 ? 'text-rose-500' : 'text-slate-800' },
-              { label: 'FCA Global', value: stats.fca.toFixed(2), color: 'text-indigo-600' }
+              { label: 'FCA Global', value: formatFca(stats), color: claseFca(stats, 'text-indigo-600', 'text-orange-600'), title: tituloFca(stats) }
             ].map(item => (
-              <div key={item.label} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
+              <div key={item.label} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm" title={item.title}>
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">{item.label}</p>
                 <p className={`text-2xl font-black mt-2 leading-none ${item.color}`}>{item.value}</p>
               </div>
@@ -3260,7 +4724,7 @@ return (
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Duración:</span><strong className="text-slate-800">{stats.diasLote} días</strong></div>
                 <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Peso Promedio Inicial:</span><strong className="text-slate-800">{stats.pesoInicial.toFixed(1)} lb</strong></div>
-                <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Peso Promedio Final (Venta):</span><strong className="text-slate-800">{stats.pesoActual.toFixed(1)} lb</strong></div>
+                <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Peso Promedio Final {stats.pesoEsEstimado ? '(Estimado)' : '(Venta)'}:</span><strong className="text-slate-800" title={tituloPesoLb(stats)}>{formatPesoLb(stats)}</strong></div>
                 <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Libras Vendidas:</span><strong className="text-slate-800">{stats.librasVendidas.toFixed(1)} lb</strong></div>
                 <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Peso Producido para FCA:</span><strong className="text-slate-800">{stats.pesoProducidoLb.toFixed(1)} lb</strong></div>
                 <div className="flex justify-between"><span className="text-slate-500">Alimento Registrado:</span><strong className="text-slate-800">{stats.consumoTotalLb.toFixed(1)} lb</strong></div>
@@ -3594,87 +5058,45 @@ return (
         </div>
       </div>
 
-      {/* SECCIÓN: PROTOCOLO SANITARIO BASE */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgba(0,0,0,0.015)] space-y-6">
+      {/* PROTOCOLO SANITARIO: fijo, no editable. Sueros, desparasitación x2 e Innosure. */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgba(0,0,0,0.015)] space-y-4">
         <div>
-          <h3 className="font-extrabold text-base text-slate-800 flex items-center gap-2"><HeartPulse className="text-rose-500" size={18} /> Protocolo Sanitario Base</h3>
-          <p className="text-slate-400 text-xs mt-1">Este calendario clínico estándar se aplicará a todos los nuevos lotes cuando ingreses un corral. Modifica los pasos según las pautas de tu veterinario. Los pasos pendientes aparecen automáticamente en el Calendario.</p>
+          <h3 className="font-extrabold text-base text-slate-800 flex items-center gap-2"><HeartPulse className="text-rose-500" size={18} /> Protocolo Sanitario</h3>
+          <p className="text-slate-400 text-xs mt-1 leading-relaxed">Esto es lo que se le aplica a todo lote, y son las únicas fechas que el Calendario programa solo. Cualquier tratamiento por enfermedad se registra aparte, en Tratamientos Médicos del corral.</p>
         </div>
-        <div className="space-y-3">
-          {listProtocoloSanitario.sort((a, b) => (Number(a.dia) || 0) - (Number(b.dia) || 0)).map(paso => (
-            <div key={paso.id} className="p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-slate-50/50 transition-colors">
-              <div className="flex flex-col md:flex-row md:items-start justify-between gap-3 text-xs">
-                <div>
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    <span className="bg-slate-900 text-white text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md">{paso.rango || `Día ${paso.dia}`}</span>
-                    <span className="bg-rose-50 text-rose-700 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border border-rose-100">{paso.tipo || 'Sanidad'}</span>
-                    {paso.duracion && <span className="bg-slate-200 text-slate-600 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md">Duración: {paso.duracion}</span>}
-                  </div>
-                  <h4 className="font-extrabold text-slate-800 text-sm leading-tight">{paso.tarea}</h4>
-                  {paso.producto && <p className="text-slate-600 mt-1.5"><strong>Producto Sugerido:</strong> {paso.producto}</p>}
-                  {getProductoMedicoLigado(paso) && (
-                    <p className="text-indigo-600 font-bold mt-1 font-mono">
-                      Farmacia Ligada: {getProductoMedicoLigado(paso).nombre}
-                    </p>
-                  )}
-                  {paso.condicion && <p className="text-slate-500 mt-1 text-[11px] leading-relaxed"><strong>Condición:</strong> {paso.condicion}</p>}
-                  {paso.nota && <p className="text-slate-400 bg-white p-2.5 rounded-lg border border-slate-200/50 mt-2 leading-relaxed">{paso.nota}</p>}
-                </div>
-                <button onClick={() => handleEliminarPasoProtocolo(paso.id)} className="text-slate-300 hover:text-rose-500 transition-colors p-1 rounded-md shrink-0 self-end md:self-start" title="Eliminar paso">
-                  <Trash2 size={16} />
-                </button>
+        <div className="space-y-2.5">
+          {listProtocoloSanitario.map(paso => (
+            <div key={paso.id} className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-100 bg-slate-50/60">
+              <span className="text-lg leading-none mt-0.5">{CLASES_MEDICAMENTO[claseDeMedicamento(paso)]?.emoji || '🩺'}</span>
+              <div className="min-w-0">
+                <p className="font-bold text-slate-800 text-xs">
+                  {paso.tarea} <span className="text-slate-400 font-semibold">· {paso.rango}</span>
+                  {paso.pesoEsperado && <span className="ml-2 bg-slate-200/70 text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded">{paso.pesoEsperado}</span>}
+                </p>
+                <p className="text-[11px] text-slate-500 font-medium leading-snug mt-0.5">{paso.producto}</p>
               </div>
             </div>
           ))}
+          <div className="flex items-start gap-3 p-3.5 rounded-xl border border-indigo-100 bg-indigo-50/40">
+            <span className="text-lg leading-none mt-0.5">🔵</span>
+            <div className="min-w-0">
+              <p className="font-bold text-slate-800 text-xs">Innosure 1ª y 2ª dosis <span className="text-slate-400 font-semibold">· semanas 12 y 18</span></p>
+              <p className="text-[11px] text-slate-500 font-medium leading-snug mt-0.5">Solo en lotes con machos sin capar. Se programa al registrar la composición del corral, y bloquea la venta hasta 3 semanas después de la 2ª dosis.</p>
+            </div>
+          </div>
         </div>
 
-        <form onSubmit={handleAgregarPasoProtocolo} className="bg-rose-50/30 border border-rose-200/60 rounded-2xl p-5 space-y-4 text-xs font-semibold">
-          <h4 className="text-rose-900 font-extrabold text-sm flex items-center gap-1.5"><Plus size={16} /> Agregar Paso Clínico al Protocolo Base</h4>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div>
-              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Día de Aplicación</label>
-              <input type="number" name="dia" min="0" required placeholder="Día (ej. 7)" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white text-slate-800 font-bold" />
-            </div>
-            <div>
-              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Rango Descriptivo</label>
-              <input name="rango" placeholder="Ej. Día 7-10" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-            </div>
-            <div>
-              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Tipo de Actividad</label>
-              <input name="tipo" placeholder="Ej. Vacunación" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-            </div>
-            <div>
-              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Duración (Frecuencia)</label>
-              <input name="duracion" placeholder="Ej. 1 revisión" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-            </div>
+        <div className="border-t border-slate-100 pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-slate-700 text-xs">Importar fechas del plan de corrales</p>
+            <p className="text-[11px] text-slate-500 font-medium leading-relaxed mt-0.5">
+              Carga las 18 fechas reales de Innosure de los corrales 3 al 11 tomadas del archivo del plan, y reemplaza las fechas teóricas que generó la app. Es una sola vez.
+            </p>
           </div>
-          <div>
-            <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Acción / Tarea Principal</label>
-            <input name="tarea" required placeholder="Ej. Aplicar Ivermectina 1% inyectable" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Producto Comercial Sugerido</label>
-              <input name="producto" placeholder="Ej. Ivermectina L.A." className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white" />
-            </div>
-            <div>
-              <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Ligar a Fármaco de Farmacia</label>
-              <select name="productoMedicoId" className="w-full p-2.5 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white text-slate-700">
-                <option value="">Sin ligar</option>
-                {listCatalogoMedico.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Indicaciones Clínicas (Dosis, Cuándo aplicar)</label>
-            <textarea name="condicion" placeholder="Sarna, piojos o comezón..." className="w-full p-3 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white min-h-[76px]" />
-          </div>
-          <div>
-            <label className="block text-slate-500 uppercase tracking-widest font-bold mb-1">Advertencia o Nota Técnica</label>
-            <textarea name="nota" placeholder="Pesar bien para evitar sobredosis..." className="w-full p-3 border border-rose-200 rounded-xl outline-none focus:ring-2 focus:ring-rose-500/20 bg-white min-h-[76px]" />
-          </div>
-          <button type="submit" className="bg-rose-600 hover:bg-rose-700 text-white font-black px-6 py-3 rounded-xl transition-all shadow-md shadow-rose-600/10 flex items-center justify-center gap-1.5"><Plus size={16} /> Guardar Paso Sanitario</button>
-        </form>
+          <button type="button" onClick={handleImportarInnosureDelExcel} className="bg-indigo-600 hover:bg-indigo-700 text-white font-black text-[11px] uppercase tracking-wider px-4 py-2.5 rounded-xl transition-colors shadow-md shrink-0">
+            Importar
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -3774,6 +5196,40 @@ return (
                   <input type="number" name="pesoInicial" step="0.1" required className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold" />
                 </div>
               </div>
+
+              <div className="border-t border-slate-100 pt-5 space-y-4">
+                <div>
+                  <h4 className="text-slate-700 font-extrabold text-sm">Composición del lote</h4>
+                  <p className="text-[11px] text-slate-400 font-medium leading-relaxed mt-0.5">Los machos sin capar necesitan Innosure. Las hembras y los machos capados no llevan nada de esto.</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Machos</label>
+                    <input type="number" name="machos" min="0" defaultValue={0} value={ingresoMachos} onChange={(e) => setIngresoMachos(Math.max(0, parseInt(e.target.value, 10) || 0))} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold" />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Hembras</label>
+                    <input type="number" name="hembras" min="0" defaultValue={0} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold" />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Machos capados</label>
+                    <input type="number" name="machosCapados" min="0" max={ingresoMachos} defaultValue={0} disabled={ingresoMachos === 0} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold disabled:bg-slate-100 disabled:text-slate-400" />
+                    <p className="text-[10px] text-slate-400 font-medium mt-1 leading-snug">{ingresoMachos === 0 ? 'Sin machos registrados' : `De los ${ingresoMachos} machos`}</p>
+                  </div>
+                </div>
+
+                {ingresoMachos > 0 && (
+                  <div>
+                    <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Plan de Innosure</label>
+                    <select name="planInnosure" defaultValue={PLAN_INNOSURE_POR_DEFECTO} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold">
+                      <option value={22}>22 semanas — 1ª dosis semana 12, 2ª semana 18, salida semana 22</option>
+                      <option value={20}>20 semanas — 1ª dosis semana 10, 2ª semana 16, salida semana 20</option>
+                    </select>
+                    <p className="text-[10px] text-slate-400 font-medium mt-1 leading-snug">Son fechas sugeridas. Lo que la app sí exige son los mínimos: 2 semanas entre dosis y 3 semanas de la 2ª dosis a la venta.</p>
+                  </div>
+                )}
+              </div>
+
               <button type="submit" className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-lg shadow-emerald-500/15 transition-all text-sm uppercase tracking-wider mt-4">Iniciar Control de Lote</button>
             </form>
           </div>
@@ -3806,15 +5262,28 @@ return (
                       <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Días en Engorde:</span><span className="font-extrabold text-base text-slate-800">{stats.diasLote}</span></div>
                       <div className={`flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border ${stats.estaListoParaMezclas ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-100'}`}>
                         <span className={`${stats.estaListoParaMezclas ? 'text-emerald-800 font-bold' : 'text-slate-500 font-bold'}`}>Peso Promedio Actual:</span>
-                        <span className={`font-black text-xl flex items-center ${stats.estaListoParaMezclas ? 'text-emerald-700 animate-pulse' : 'text-blue-700'}`}>{stats.pesoActual} lb {stats.estaListoParaMezclas && <Leaf size={18} className="ml-1.5 text-emerald-500" title="¡Listo para Mezclas!" />}</span>
+                        <span className={`font-black text-xl flex items-center ${stats.estaListoParaMezclas ? 'text-emerald-700 animate-pulse' : 'text-blue-700'}`} title={tituloPesoLb(stats)}>{formatPesoLb(stats)} {stats.estaListoParaMezclas && <Leaf size={18} className="ml-1.5 text-emerald-500" title="¡Listo para Mezclas!" />}</span>
                       </div>
+                      {stats.pesoEsEstimado && (
+                        <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed font-medium">
+                          Peso estimado por consumo de alimento. Último pesaje real: <strong>{stats.pesoActual.toFixed(1)} lb hace {stats.diasSinPesaje} días</strong>.
+                        </p>
+                      )}
                       <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Ganancia Media Diaria (GMD):</span><span className="font-bold text-slate-800">{stats.adg.toFixed(2)} lbs/día</span></div>
                       <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Peso Total Producido:</span><span className="font-bold text-slate-800">{stats.pesoProducidoLb.toFixed(1)} lb <span className="text-[10px] font-bold text-slate-400 ml-1">({stats.librasVendidas.toFixed(1)} lb vendidas)</span></span></div>
-                      <div className={`p-4 rounded-xl border mt-4 ${stats.fca > 3 ? 'bg-orange-50 border-orange-200' : 'bg-emerald-50/50 border-emerald-250'}`}>
+                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Consumo del Ciclo:</span><span className={`font-bold ${stats.excedeCicloCompleto ? 'text-rose-600' : 'text-slate-800'}`} title={`${stats.consumoPorCerdoLb.toFixed(0)} lb por cerdo; un ciclo completo son 496 lb`}>{stats.consumoCicloPorcentaje.toFixed(0)}%{stats.excedeCicloCompleto && ' · ¿vender?'}</span></div>
+                      <div className={`p-4 rounded-xl border mt-4 ${!stats.fcaEsConfiable ? 'bg-slate-50 border-slate-200' : stats.fca > 3 ? 'bg-orange-50 border-orange-200' : 'bg-emerald-50/50 border-emerald-250'}`} title={tituloFca(stats)}>
                         <div className="flex justify-between items-center">
-                          <span className={`font-bold ${stats.fca > 3 ? 'text-orange-800' : 'text-emerald-800'} flex items-center`}>Conversión Alimenticia (FCA)</span>
-                          <span className={`font-black text-3xl ${stats.fca > 3 ? 'text-orange-600' : 'text-emerald-600'}`}>{stats.fca.toFixed(2)}</span>
+                          <span className={`font-bold flex items-center ${!stats.fcaEsConfiable ? 'text-slate-500' : stats.fca > 3 ? 'text-orange-800' : 'text-emerald-800'}`}>Conversión Alimenticia (FCA)</span>
+                          <span className={`font-black text-3xl ${claseFca(stats, 'text-emerald-600', 'text-orange-600')}`}>{formatFca(stats)}</span>
                         </div>
+                        {!stats.fcaEsConfiable && (
+                          <p className="text-[10px] text-slate-500 font-medium leading-relaxed mt-2 border-t border-slate-200 pt-2">
+                            {stats.fca > 0
+                              ? <>Este número no es confiable{stats.pesajeVencido ? ` porque el último pesaje tiene ${stats.diasSinPesaje} días` : ' porque falta un segundo pesaje reciente'}. Registrá un pesaje para calcularlo de verdad.</>
+                              : <>Hacen falta al menos dos pesajes para calcular la conversión.</>}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -4330,8 +5799,10 @@ return (
 
               {/* TAB: SANIDAD Y BAJAS */}
               {tabActiva === 'sanidad' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-in fade-in duration-300 text-xs">
-                  <div className="space-y-6">
+                <div className="space-y-8 animate-in fade-in duration-300 text-xs">
+
+                  {/* 1 · ESTADO DEL LOTE */}
+                  <div className="md:col-span-2">{renderComposicionLote(loteActivo)}</div>
                     <div className={`p-5 rounded-2xl border shadow-sm space-y-4 ${riesgoNivelSanidad === 'alto' ? 'bg-rose-50/40 border-rose-100' : riesgoNivelSanidad === 'medio' ? 'bg-amber-50/40 border-amber-100' : 'bg-emerald-50/40 border-emerald-100'}`}>
                       <div className="flex items-center justify-between gap-2">
                         <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-1.5"><HeartPulse size={20} className="text-rose-600" /> Estado Sanitario</h3>
@@ -4355,8 +5826,8 @@ return (
                           Ver en Calendario
                         </button>
                         {listTareasSanidad.filter(t => t.loteId === loteActivo.id).length === 0 && (
-                          <button type="button" onClick={() => handleGenerarProtocoloLote(loteActivo)} className="flex-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 py-2.5 rounded-xl transition-colors">
-                            Generar Protocolo Sanitario
+                          <button type="button" onClick={() => handleSincronizarProtocoloLote(loteActivo)} className="flex-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 py-2.5 rounded-xl transition-colors">
+                            Sincronizar Protocolo
                           </button>
                         )}
                       </div>
@@ -4379,18 +5850,87 @@ return (
                       )}
                     </div>
 
+                  {/* 2 · REGISTRAR */}
+                  <div>
+                    <div className="flex items-baseline gap-2 mb-3">
+                      <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Registrar</h3>
+                      <span className="text-[11px] text-slate-300">lo que se le aplicó o gastó a este lote</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
                     <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
-                      <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Syringe size={18} className="text-indigo-600" /> Tratamientos Médicos</h3>
+                      <h3 className="font-extrabold text-slate-800 text-base mb-1 flex items-center gap-2"><Syringe size={18} className="text-indigo-600" /> Tratamientos Médicos</h3>
+                      <p className="text-[11px] text-slate-500 leading-relaxed mb-4 border-b border-slate-50 pb-3">Si el producto sale de la farmacia se descuenta solo del stock y el costo se calcula al promedio.</p>
                       <form onSubmit={handleRegistrarTratamientoManual} className="space-y-4 font-semibold">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha</label><input type="date" name="fecha" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
-                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Costo Total (Q)</label><input type="number" name="costo" step="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold" /></div>
+                        <div>
+                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Producto</label>
+                          <select name="productoId" value={tratamientoProductoId} onChange={(e) => setTratamientoProductoId(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold">
+                            <option value="">Otro — no está en la farmacia</option>
+                            {inventarioMedico.map(m => (
+                              <option key={m.id} value={m.id} disabled={m.stock <= 0}>
+                                {m.nombre}{m.stock > 0 ? ` — quedan ${m.stock.toFixed(1)} ${m.unidad}` : ' — sin existencia'}
+                              </option>
+                            ))}
+                          </select>
+                          {inventarioMedico.every(m => m.stock <= 0) && (
+                            <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mt-1.5 font-medium leading-snug">
+                              La farmacia está en cero. Registrá la compra en Bodega Central → Farmacia y después la descontás desde acá.
+                            </p>
+                          )}
                         </div>
-                        <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Medicamento / Fármaco</label><input type="text" name="nombre" required placeholder="Ej. Complejo B / Hierro" className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+
+                        {tratamientoProductoId ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad aplicada</label><input type="number" name="cantidad" step="0.01" min="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold" /></div>
+                            <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha</label><input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+                          </div>
+                        ) : (
+                          <>
+                            <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Medicamento / Fármaco</label><input type="text" name="nombre" required placeholder="Ej. Complejo B / Hierro" className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Costo Total (Q)</label><input type="number" name="costo" step="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold" /></div>
+                              <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha</label><input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+                            </div>
+                          </>
+                        )}
+
                         <button type="submit" className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl transition-all shadow-md shadow-indigo-600/10 uppercase tracking-wider">Añadir Tratamiento</button>
                       </form>
                     </div>
-
+                    <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
+                      <h3 className="font-extrabold text-slate-800 text-base mb-1 flex items-center gap-2"><Package size={18} className="text-emerald-600" /> Consumo de Insumos</h3>
+                      <p className="text-[11px] text-slate-500 leading-relaxed mb-4 border-b border-slate-50 pb-3">Viruta, cal, desinfectante. Se descuenta de la bodega y el costo se carga a este lote.</p>
+                      {inventarioInsumos.length === 0 ? (
+                        <p className="text-[11px] text-slate-400 italic py-3">No hay insumos en el catálogo. Agregalos en Bodega Central → Insumos.</p>
+                      ) : (
+                        <form onSubmit={handleUsarInsumoEnCorral} className="space-y-4 font-semibold">
+                          <input type="hidden" name="loteId" value={loteActivo.id} />
+                          <div>
+                            <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Insumo</label>
+                            <select name="productoId" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold">
+                              <option value="">Elegí un insumo...</option>
+                              {/* Los que están en cero se muestran igual, deshabilitados: así se ve
+                                  que el insumo existe y lo que falta es comprarlo. */}
+                              {inventarioInsumos.map(i => (
+                                <option key={i.id} value={i.id} disabled={i.stock <= 0}>
+                                  {i.nombre}{i.stock > 0 ? ` — quedan ${i.stock.toFixed(1)} ${i.unidad}` : ' — sin existencia'}
+                                </option>
+                              ))}
+                            </select>
+                            {inventarioInsumos.every(i => i.stock <= 0) && (
+                              <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mt-1.5 font-medium leading-snug">
+                                Todos están en cero. Registrá la compra en Bodega Central → Insumos y después los descontás desde acá.
+                              </p>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad</label><input type="number" name="cantidad" step="0.01" min="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold" /></div>
+                            <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha</label><input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+                          </div>
+                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Nota (opcional)</label><input type="text" name="observacion" placeholder="Ej: cambio de cama" className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+                          <button type="submit" className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl transition-all shadow-md uppercase tracking-wider">Descontar de Bodega</button>
+                        </form>
+                      )}
+                    </div>
                     <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
                       <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Receipt size={18} className="text-slate-500" /> Gastos Operativos Directos</h3>
                       <form onSubmit={(e) => { e.preventDefault(); const fd = new FormData(e.target); setGastosExtra(prev => [...safeArr(prev), { id: crypto.randomUUID(), loteId: loteActivo.id, fecha: fd.get('fecha'), descripcion: fd.get('descripcion').trim(), monto: parseFloat(fd.get('monto')) }]); e.target.reset(); }} className="space-y-4 font-semibold">
@@ -4402,9 +5942,6 @@ return (
                         <button type="submit" className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-xl transition-all shadow-md uppercase tracking-wider">Añadir Gasto Directo</button>
                       </form>
                     </div>
-                  </div>
-
-                  <div className="space-y-6">
                     <div className="bg-rose-50/20 border border-rose-100 rounded-2xl p-5 space-y-4">
                       <h3 className="font-extrabold text-rose-950 text-base flex items-center gap-1.5"><HeartPulse size={20} className="text-rose-600" /> Registro de Bajas y Decesos</h3>
                       <form onSubmit={handleRegistrarBaja} className="space-y-4 font-semibold text-xs">
@@ -4416,7 +5953,41 @@ return (
                         <button type="submit" className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-xl transition-all shadow-md shadow-rose-600/10 uppercase tracking-wider">Registrar Baja Definitiva</button>
                       </form>
                     </div>
+                    </div>
+                  </div>
 
+                  {/* 3 · HISTORIAL */}
+                  <div>
+                    <div className="flex items-baseline gap-2 mb-3">
+                      <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Historial</h3>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+                    <div className="space-y-2.5">
+                      <h3 className="font-extrabold text-slate-800 text-sm border-b border-slate-50 pb-2">Gastos Sanitarios & Operativos Registrados</h3>
+                      <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm max-h-48 overflow-y-auto scrollbar-thin">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
+                            {listGastosExtra.filter(g => g.loteId === loteActivo.id).map(g => (
+                              <tr key={g.id} className="hover:bg-slate-50/50 transition-colors">
+                                <td className="p-3 pl-4"><p className="font-bold text-slate-800">{g.descripcion}</p><p className="text-[10px] text-slate-400 font-medium mt-0.5">{g.fecha} • Operación</p></td>
+                                <td className="p-3 text-right font-black text-rose-600">-{formatearMoneda(g.monto)}</td>
+                                <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('gasto', g.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
+                              </tr>
+                            ))}
+                            {listVacunas.filter(v => v.loteId === loteActivo.id).map(v => (
+                              <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
+                                <td className="p-3 pl-4"><p className="font-bold text-indigo-900">{v.nombre}</p><p className="text-[10px] text-slate-400 font-medium mt-0.5">{v.fecha} • Tratamiento Médico</p></td>
+                                <td className="p-3 text-right font-black text-rose-600">-{formatearMoneda(v.costo)}</td>
+                                <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('vacuna', v.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
+                              </tr>
+                            ))}
+                            {listGastosExtra.filter(g => g.loteId === loteActivo.id).length === 0 && listVacunas.filter(v => v.loteId === loteActivo.id).length === 0 && (
+                              <tr><td colSpan="3" className="py-8 text-center text-slate-400 italic font-semibold">No hay gastos sanitarios u operativos.</td></tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                     <div className="space-y-2.5">
                       <h3 className="font-extrabold text-slate-800 text-sm flex justify-between items-end border-b border-slate-50 pb-2">
                         <span>Historial de Bajas</span>
@@ -4462,32 +6033,6 @@ return (
                         </table>
                       </div>
                     </div>
-
-                    <div className="space-y-2.5">
-                      <h3 className="font-extrabold text-slate-800 text-sm border-b border-slate-50 pb-2">Gastos Sanitarios & Operativos Registrados</h3>
-                      <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm max-h-48 overflow-y-auto scrollbar-thin">
-                        <table className="w-full text-left text-xs border-collapse">
-                          <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
-                            {listGastosExtra.filter(g => g.loteId === loteActivo.id).map(g => (
-                              <tr key={g.id} className="hover:bg-slate-50/50 transition-colors">
-                                <td className="p-3 pl-4"><p className="font-bold text-slate-800">{g.descripcion}</p><p className="text-[10px] text-slate-400 font-medium mt-0.5">{g.fecha} • Operación</p></td>
-                                <td className="p-3 text-right font-black text-rose-600">-{formatearMoneda(g.monto)}</td>
-                                <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('gasto', g.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
-                              </tr>
-                            ))}
-                            {listVacunas.filter(v => v.loteId === loteActivo.id).map(v => (
-                              <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
-                                <td className="p-3 pl-4"><p className="font-bold text-indigo-900">{v.nombre}</p><p className="text-[10px] text-slate-400 font-medium mt-0.5">{v.fecha} • Tratamiento Médico</p></td>
-                                <td className="p-3 text-right font-black text-rose-600">-{formatearMoneda(v.costo)}</td>
-                                <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('vacuna', v.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
-                              </tr>
-                            ))}
-                            {listGastosExtra.filter(g => g.loteId === loteActivo.id).length === 0 && listVacunas.filter(v => v.loteId === loteActivo.id).length === 0 && (
-                              <tr><td colSpan="3" className="py-8 text-center text-slate-400 italic font-semibold">No hay gastos sanitarios u operativos.</td></tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -4518,7 +6063,19 @@ return (
                             <input type="range" min="0" max={stats.cantidadActual} value={simuladorMuertesExtra} onChange={(e) => setSimuladorMuertesExtra(parseInt(e.target.value))} className="flex-1 h-1.5 accent-amber-500 bg-slate-200 rounded-lg appearance-none cursor-pointer" />
                             <span className="font-black text-xl text-amber-600 w-8 text-center shrink-0">{simuladorMuertesExtra}</span>
                           </div>
-                          <p className="text-[10px] text-slate-450 border-t border-slate-100 pt-2 text-center mt-1">Simulando vender: <strong className="text-slate-700">{stats.cantidadParaProyeccion} cerdos</strong> de los {stats.cantidadActual} vivos.</p>
+                          <div className="border-t border-slate-100 pt-2 mt-1 space-y-1 text-[10px] text-slate-450">
+                            <div className="flex justify-between"><span>Cerdos vivos hoy</span><strong className="text-slate-700">{stats.cantidadActual}</strong></div>
+                            {stats.mortalidadEsperadaProyectada > 0 && (
+                              <div className="flex justify-between" title="Proyectadas con la mortalidad historica de este mismo lote">
+                                <span>Bajas esperadas (histórico)</span>
+                                <strong className="text-amber-600">-{stats.mortalidadEsperadaProyectada.toFixed(1)}</strong>
+                              </div>
+                            )}
+                            {simuladorMuertesExtra > 0 && (
+                              <div className="flex justify-between"><span>Bajas hipotéticas</span><strong className="text-amber-600">-{simuladorMuertesExtra}</strong></div>
+                            )}
+                            <div className="flex justify-between border-t border-slate-100 pt-1.5 mt-1.5"><span className="font-bold text-slate-600">Se proyecta vender</span><strong className="text-slate-800">{stats.cantidadParaProyeccion.toFixed(1)} cerdos</strong></div>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -4527,14 +6084,60 @@ return (
                   <div className="xl:col-span-8 space-y-4">
                     <h3 className="font-extrabold text-slate-800 text-sm flex items-center gap-1.5"><TrendingUp size={18} className="text-indigo-500" /> Simulador de Cierre de Lote (Meta: {stats.pesoObjetivoLb} lb)</h3>
 
-                    {stats.pesoActual >= stats.pesoObjetivoLb ? (
+                    {stats.parametrosIncompletos && (
+                      <div className="bg-slate-100 border border-slate-300 rounded-2xl p-3.5 flex items-start gap-2.5">
+                        <AlertTriangle size={16} className="text-slate-500 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-slate-700 font-medium leading-relaxed">
+                          Faltan parámetros de este lote:{' '}
+                          <strong>{[stats.faltaPrecioVenta && 'precio de venta por libra', stats.faltaCostoLechon && 'costo unitario del lechón'].filter(Boolean).join(' y ')}</strong> en Q0.
+                          Mientras estén en cero, la proyección de abajo no significa nada. Configuralos en Parámetros del Negocio.
+                        </p>
+                      </div>
+                    )}
+
+                    {stats.pesajeVencido && (
+                      <div className="bg-amber-50/60 border border-amber-300/60 rounded-2xl p-3.5 flex items-start gap-2.5">
+                        <Scale size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-amber-900 font-medium leading-relaxed">
+                          {stats.sinPesajes
+                            ? <>Este lote <strong>no tiene ningún pesaje registrado</strong>. No hay base real para proyectar.</>
+                            : <>Último pesaje hace <strong>{stats.diasSinPesaje} días</strong> ({stats.pesoActual.toFixed(1)} lb). Como el lote consumió alimento desde entonces, se estima un peso actual de <strong>~{stats.pesoParaProyeccion.toFixed(1)} lb</strong> con una conversión de referencia de 3.0, y ese es el peso que usan los cálculos de abajo. <strong>Registrá un pesaje real</strong> para reemplazar la estimación.</>}
+                        </p>
+                      </div>
+                    )}
+
+                    {stats.fcaProyeccionAcotada && (
+                      <div className="bg-orange-50/60 border border-orange-300/60 rounded-2xl p-3.5 flex items-start gap-2.5">
+                        <AlertTriangle size={16} className="text-orange-500 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-orange-900 font-medium leading-relaxed">
+                          La conversión alimenticia calculada de este lote es <strong>{stats.fca.toFixed(2)}</strong>, fuera del rango biológico posible — casi siempre significa que faltan pesajes.
+                          Para proyectar el alimento futuro se está usando <strong>{stats.fcaProyeccion.toFixed(2)}</strong> en su lugar.
+                          <span className="block mt-1.5 text-orange-800/70">La proyección siempre usa la conversión <em>marginal</em> de finalización (un 20% peor que la acumulada del ciclo), porque el cerdo de engorde convierte peor que el lechón.</span>
+                        </p>
+                      </div>
+                    )}
+
+                    {stats.pesoAjustadoPorVenta && (
+                      <div className="bg-blue-50/60 border border-blue-200/60 rounded-2xl p-3.5 flex items-start gap-2.5">
+                        <Scale size={16} className="text-blue-500 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-blue-900 font-medium leading-relaxed">
+                          Último pesaje registrado: <strong>{stats.pesoActualRegistrado.toFixed(1)} lb</strong> (promedio de todo el lote antes de la venta parcial).
+                          Peso estimado de los <strong>{stats.cantidadActual} cerdos que quedan: {stats.pesoActual.toFixed(1)} lb</strong>, descontando las libras de báscula ya vendidas.
+                          Los cálculos de esta pantalla usan el peso estimado. Registra un pesaje nuevo para reemplazarlo por una medición real.
+                        </p>
+                      </div>
+                    )}
+
+                    {stats.pesoParaProyeccion >= stats.pesoObjetivoLb ? (
                       <div className="bg-slate-900 text-white p-6 lg:p-12 rounded-3xl text-center shadow-lg border-2 border-emerald-500 relative overflow-hidden flex flex-col justify-center items-center">
+                        {(simuladorMuertesExtra > 0 || stats.mortalidadEsperadaProyectada > 0) && <div className="absolute top-4 right-4 bg-amber-100 border border-amber-200 text-amber-800 text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider">Simulación Pesimista Activa</div>}
                         <CheckCircle size={56} className="text-emerald-400 mb-3" />
                         <h4 className="text-2xl font-black mb-1">¡Lote Listo para Mercado!</h4>
                         <p className="text-slate-400 text-xs mb-6 max-w-md font-medium leading-relaxed">El ganado ha superado el peso objetivo comercial. Puedes coordinar la báscula de venta.</p>
                         <div className="bg-slate-950/80 border border-slate-800/80 p-5 rounded-2xl shadow-inner max-w-xs w-full text-center">
-                          <p className="text-[10px] text-slate-450 font-bold uppercase tracking-widest leading-none mb-2">Utilidad Neta Real Hoy</p>
-                          <p className="text-3xl font-black text-emerald-400">{formatearMoneda(stats.utilidadNeta)}</p>
+                          <p className="text-[10px] text-slate-450 font-bold uppercase tracking-widest leading-none mb-2">Utilidad Neta Proyectada a Cierre</p>
+                          <p className={`text-3xl font-black ${stats.proyeccionUtilidadFinal > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{formatearMoneda(stats.proyeccionUtilidadFinal)}</p>
+                          <p className="text-[10px] text-slate-450 font-medium leading-relaxed mt-3 border-t border-slate-800/80 pt-3">Vendiendo {stats.cantidadParaProyeccion.toFixed(1)} cerdos a {stats.pesoParaProyeccion.toFixed(1)} lb{stats.pesoEsEstimado && ' (peso estimado)'}, descontada toda la inversión y la mano de obra.</p>
                         </div>
                       </div>
                     ) : (
@@ -4549,8 +6152,12 @@ return (
 
                         <div className="p-4 sm:p-6 lg:p-8 space-y-4 font-semibold text-slate-600 text-sm">
                           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                            <span className="text-slate-500 font-medium">Inversión actual total:</span>
+                            <span className="text-slate-500 font-medium">Inversión actual (lechones, alimento, sanidad):</span>
                             <span className="font-bold text-slate-800">-{formatearMoneda(stats.costoInvertidoTotal)}</span>
+                          </div>
+                          <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                            <span className="text-slate-500 font-medium">Mano de obra del ciclo:</span>
+                            <span className="font-bold text-slate-800">-{formatearMoneda(loteActivo.manoObra || 0)}</span>
                           </div>
                           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                             <span className="text-slate-500 font-medium flex items-center gap-1.5"><AlertTriangle size={15} className="text-amber-500" /> Costo alimento futuro estimado:</span>
@@ -4562,12 +6169,17 @@ return (
                           </div>
 
                           <div className="bg-slate-50 border border-slate-100 p-4 sm:p-6 lg:p-8 rounded-3xl mt-5 text-center shadow-inner relative">
-                            {simuladorMuertesExtra > 0 && <div className="absolute top-4 right-4 bg-amber-100 border border-amber-200 text-amber-800 text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider">Simulación Pesimista Activa</div>}
+                            {(simuladorMuertesExtra > 0 || stats.mortalidadEsperadaProyectada > 0) && <div className="absolute top-4 right-4 bg-amber-100 border border-amber-200 text-amber-800 text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider">Simulación Pesimista Activa</div>}
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 leading-none">Margen Neto Limpio Estimado a Cierre</p>
                             <p className={`text-4xl md:text-5xl font-black tracking-tight leading-none ${stats.proyeccionUtilidadFinal > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                               {formatearMoneda(stats.proyeccionUtilidadFinal)}
                             </p>
-                            <p className="text-slate-450 text-[10px] font-medium leading-relaxed max-w-md mx-auto mt-4">Esta simulación descuenta compras de lechones, costo total del alimento (suministrado y futuro), gastos de sanidad, mano de obra y las {simuladorMuertesExtra} muertes hipotéticas configuradas.</p>
+                            <p className="text-slate-450 text-[10px] font-medium leading-relaxed max-w-md mx-auto mt-4">
+                              Esta simulación descuenta compras de lechones, costo total del alimento (suministrado y futuro), gastos de sanidad y mano de obra.
+                              Proyecta la venta de {stats.cantidadParaProyeccion.toFixed(1)} cerdos
+                              {stats.mortalidadEsperadaProyectada > 0 && `, tras restar ${stats.mortalidadEsperadaProyectada.toFixed(1)} bajas esperadas por tu mortalidad histórica`}
+                              {simuladorMuertesExtra > 0 && ` y las ${simuladorMuertesExtra} bajas hipotéticas configuradas`}.
+                            </p>
                           </div>
                         </div>
                       </div>
@@ -4662,7 +6274,7 @@ return (
                 </div>
                 <div>
                   <p className="text-[10px] font-black text-slate-400 uppercase border-b border-slate-200 pb-1.5 mb-2 leading-none">Último Peso Registrado</p>
-                  <p className="text-lg font-bold text-slate-800 leading-tight">{st.pesoActual > 0 ? `${st.pesoActual} lbs promedio` : 'Sin pesaje registrado'}</p>
+                  <p className="text-lg font-bold text-slate-800 leading-tight" title={tituloPesoLb(st)}>{st.pesoParaProyeccion > 0 ? `${formatPesoLb(st)} promedio` : 'Sin pesaje registrado'}</p>
                 </div>
               </div>
 
@@ -4882,7 +6494,7 @@ return (
 
     const ultimaVenta = listVentas.filter(v => v.loteId === loteActivo.id).pop();
     const ticketCerdos = ultimaVenta ? (ultimaVenta.cantidadCerdos || 0) : st.cantidadActual;
-    const ticketLibras = ultimaVenta ? (ultimaVenta.totalLibras || 0) : (st.pesoActual * st.cantidadActual);
+    const ticketLibras = ultimaVenta ? (ultimaVenta.totalLibras || 0) : (st.pesoParaProyeccion * st.cantidadActual);
     const ticketPrecio = ultimaVenta ? (ultimaVenta.precioLibra || 0) : loteActivo.precioVentaLibra;
     const ticketTotal = ultimaVenta ? (ultimaVenta.totalVenta || 0) : st.ingresoEstimado;
 
@@ -5021,12 +6633,12 @@ return (
                   <table className="w-full text-left text-xs border-collapse">
                     <tbody>
                       <tr className="border-b border-slate-100"><td className="py-2 text-slate-500 w-1/2">Peso Promedio Inicial</td><td className="py-2 font-bold text-slate-800">{st.pesoInicial} lb</td></tr>
-                      <tr className="border-b border-slate-100"><td className="py-2 text-slate-500">Peso Promedio Final (Liquidado)</td><td className="py-2 font-black text-emerald-700">{st.pesoActual} lb</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-2 text-slate-500">Peso Promedio Final {st.pesoEsEstimado ? '(Estimado)' : '(Liquidado)'}</td><td className="py-2 font-black text-emerald-700" title={tituloPesoLb(st)}>{formatPesoLb(st)}</td></tr>
                       <tr className="border-b border-slate-100"><td className="py-2 text-slate-500">Ganancia Media Diaria (GMD)</td><td className="py-2 font-bold text-slate-800">{st.adg.toFixed(2)} lb / día</td></tr>
                       <tr className="border-b border-slate-100"><td className="py-2 text-slate-500">Alimento Suministrado Registrado</td><td className="py-2 font-bold text-slate-800">{st.consumoTotalLb} lb</td></tr>
                       <tr className="border-b border-slate-100"><td className="py-2 text-slate-500">Libras Vendidas por Báscula</td><td className="py-2 font-bold text-slate-800">{st.librasVendidas.toFixed(1)} lb</td></tr>
                       <tr className="border-b border-slate-100"><td className="py-2 text-slate-500">Peso Carne Producido para FCA</td><td className="py-2 font-bold text-slate-800">{st.pesoProducidoLb.toFixed(1)} lb</td></tr>
-                      <tr className="bg-slate-50 font-bold border border-slate-150"><td className="py-2 px-3 text-slate-850">Conversión Alimenticia (FCA)</td><td className="py-2 px-3 font-black text-indigo-750">{st.fca.toFixed(2)}</td></tr>
+                      <tr className="bg-slate-50 font-bold border border-slate-150"><td className="py-2 px-3 text-slate-850">Conversión Alimenticia (FCA)</td><td className="py-2 px-3 font-black text-indigo-750" title={tituloFca(st)}>{formatFca(st)}</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -5162,24 +6774,52 @@ return (
       const cerdosRestantes = stats?.cantidadActual || 0;
       const cerdosOperados = Math.max(1, cerdosRestantes + cerdosVendidos + bajasTotales);
       const costoPorCerdoOperado = inversionTotal / cerdosOperados;
-      const costoAsignadoVendidos = cerdosVendidos * costoPorCerdoOperado;
-      const costoAsignadoRestantes = cerdosRestantes * costoPorCerdoOperado;
+
+      // --- PRORRATEO POR ANIMAL-DIAS ---
+      // Repartir el costo en partes iguales por cabeza castiga a los cerdos que llegaron
+      // lejos y premia a los que murieron temprano (un lechon muerto al dia 3 casi no
+      // comio). Se separa lo que cuesta por cabeza -el lechon- de lo que cuesta por dia
+      // de permanencia -alimento, sanidad, gastos y mano de obra-.
+      const fechaIngresoLote = parseLocalDate(lote.fechaIngreso);
+      const fechaFinLote = (lote.fechaSalida ? parseLocalDate(lote.fechaSalida) : new Date()) || new Date();
+      const diasHasta = (fecha) => {
+        const objetivo = parseLocalDate(fecha) || fechaFinLote;
+        if (!fechaIngresoLote) return 0;
+        return Math.max(0, Math.ceil((objetivo - fechaIngresoLote) / 86400000));
+      };
+
+      const animalDiasVendidos = ventasLote.reduce((s, v) => s + (Number(v.cantidadCerdos) || 0) * diasHasta(v.fecha), 0);
+      const animalDiasBajas = bajasLote.reduce((s, b) => s + (Number(b.cantidad) || 0) * diasHasta(b.fecha), 0);
+      const animalDiasRestantes = cerdosRestantes * (fechaIngresoLote ? Math.max(0, Math.ceil((fechaFinLote - fechaIngresoLote) / 86400000)) : 0);
+      const animalDiasTotal = animalDiasVendidos + animalDiasBajas + animalDiasRestantes;
+
+      const costoOperativo = costoAlimento + costoMedicinas + costoGastos + costoManoObra;
+      const costoPorAnimalDia = animalDiasTotal > 0 ? costoOperativo / animalDiasTotal : 0;
+      const costoLechonPorCabeza = costoLechones / cerdosOperados;
+      const costoAsignado = (cabezas, animalDias) => (cabezas * costoLechonPorCabeza) + (animalDias * costoPorAnimalDia);
+
+      const costoAsignadoVendidos = costoAsignado(cerdosVendidos, animalDiasVendidos);
+      const costoAsignadoRestantes = costoAsignado(cerdosRestantes, animalDiasRestantes);
+      // Lo que se llevaron los animales muertos. Antes este monto simplemente desaparecia
+      // y por eso el reporte global no cuadraba con el simulador del lote.
+      const costoPerdidoBajas = costoAsignado(bajasTotales, animalDiasBajas);
+
       const utilidadVentasParciales = ingresosBrutos - costoAsignadoVendidos;
       const ventaProyectadaRestantes = Math.max(0, (stats?.proyeccionVentaFinal || 0) - ingresosBrutos);
       const costoFuturoRestantes = stats?.proyeccionCostoFaltante || 0;
       const utilidadProyectadaRestantes = ventaProyectadaRestantes - costoAsignadoRestantes - costoFuturoRestantes;
-      const pesoFinalRestantesLb = cerdosRestantes * Math.max(stats?.pesoActual || 0, stats?.pesoObjetivoLb || 0);
+      const pesoFinalRestantesLb = cerdosRestantes * Math.max(stats?.pesoParaProyeccion || 0, stats?.pesoObjetivoLb || 0);
       const puntoEquilibrioRestantes = pesoFinalRestantesLb > 0 ? (costoAsignadoRestantes + costoFuturoRestantes) / pesoFinalRestantesLb : 0;
       const ventasDetalle = ventasLote.map((venta) => {
         const libras = getVentaLibras(venta);
         const cantidad = Number(venta.cantidadCerdos) || 0;
-        const costoAsignado = cantidad * costoPorCerdoOperado;
+        const costoVenta = costoAsignado(cantidad, cantidad * diasHasta(venta.fecha));
         return {
           ...venta,
           libras,
           pesoPromedio: cantidad > 0 ? libras / cantidad : 0,
-          costoAsignado,
-          utilidadEstimada: (Number(venta.totalVenta) || 0) - costoAsignado
+          costoAsignado: costoVenta,
+          utilidadEstimada: (Number(venta.totalVenta) || 0) - costoVenta
         };
       });
 
@@ -5196,14 +6836,21 @@ return (
         costoPorCerdoOperado,
         costoAsignadoVendidos,
         costoAsignadoRestantes,
+        costoPerdidoBajas,
+        costoPorAnimalDia,
         utilidadVentasParciales,
         ventaProyectadaRestantes,
         costoFuturoRestantes,
         utilidadProyectadaRestantes,
         puntoEquilibrioRestantes,
-        pesoActual: stats?.pesoActual || 0,
+        pesoActual: stats?.pesoParaProyeccion || 0,
+        pesoMedido: stats?.pesoActual || 0,
+        pesoEsEstimado: Boolean(stats?.pesoEsEstimado),
+        diasSinPesaje: stats?.diasSinPesaje ?? null,
         pesoObjetivo: stats?.pesoObjetivoLb || 0,
         fca: stats?.fca || 0,
+        fcaEsConfiable: Boolean(stats?.fcaEsConfiable),
+        parametrosIncompletos: Boolean(stats?.parametrosIncompletos),
         diasLote: stats?.diasLote || 0,
         ventasDetalle,
       };
@@ -5216,6 +6863,7 @@ return (
       utilidadRealVentas: acc.utilidadRealVentas + r.utilidadRealVentas,
       valorEstimadoVivos: acc.valorEstimadoVivos + r.valorEstimadoVivos,
       utilidadNeta: acc.utilidadNeta + r.utilidadNeta,
+      costoPerdidoBajas: acc.costoPerdidoBajas + r.costoPerdidoBajas,
       lbsCarneVendida: acc.lbsCarneVendida + r.lbsCarneVendida,
       costoLechones: acc.costoLechones + r.costoLechones,
       costoAlimento: acc.costoAlimento + r.costoAlimento,
@@ -5224,6 +6872,7 @@ return (
       costoManoObra: acc.costoManoObra + r.costoManoObra,
     }), {
       inversionTotal: 0, ingresosBrutos: 0, utilidadRealVentas: 0, valorEstimadoVivos: 0, utilidadNeta: 0, lbsCarneVendida: 0,
+      costoPerdidoBajas: 0,
       costoLechones: 0, costoAlimento: 0, costoMedicinas: 0, costoGastos: 0, costoManoObra: 0,
     });
 
@@ -5437,12 +7086,16 @@ return (
                                   <div className="bg-white border border-slate-100 rounded-xl p-4.5 shadow-sm">
                                     <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-3 border-b border-slate-50 pb-2">Métricas de Rendimiento</h4>
                                     <div className="space-y-2 text-xs font-semibold">
-                                      <div className="flex justify-between"><span className="text-slate-500">Peso Promedio Actual</span><strong>{r.pesoActual > 0 ? `${r.pesoActual.toFixed(1)} lb` : 'Sin peso'}</strong></div>
+                                      <div className="flex justify-between"><span className="text-slate-500">Peso Promedio Actual</span><strong title={r.pesoEsEstimado ? `Estimado por consumo. Último pesaje real: ${r.pesoMedido.toFixed(1)} lb hace ${r.diasSinPesaje} días` : undefined}>{r.pesoActual > 0 ? `${r.pesoEsEstimado ? '~' : ''}${r.pesoActual.toFixed(1)} lb` : 'Sin peso'}</strong></div>
                                       <div className="flex justify-between"><span className="text-slate-500">Peso Objetivo</span><strong>{r.pesoObjetivo.toFixed(0)} lb</strong></div>
-                                      <div className="flex justify-between"><span className="text-slate-500">Conversión (FCA)</span><strong>{r.fca > 0 ? r.fca.toFixed(2) : '—'}</strong></div>
+                                      <div className="flex justify-between"><span className="text-slate-500">Conversión (FCA)</span><strong className={r.fca > 0 && !r.fcaEsConfiable ? 'text-slate-400' : ''} title={r.fca > 0 && !r.fcaEsConfiable ? 'No confiable: faltan pesajes recientes' : undefined}>{r.fca > 0 ? `${r.fca.toFixed(2)}${r.fcaEsConfiable ? '' : ' ⚠'}` : '—'}</strong></div>
                                       <div className="flex justify-between"><span className="text-slate-500">Carne Vendida</span><strong>{r.lbsCarneVendida.toFixed(1)} lb</strong></div>
                                       <div className="flex justify-between"><span className="text-slate-500">Utilidad Ventas Parciales</span><strong className={r.utilidadVentasParciales >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadVentasParciales)}</strong></div>
-                                      <div className="flex justify-between border-t border-slate-100 pt-2"><span className="text-slate-500">Utilidad Proyectada Restantes</span><strong className={r.utilidadProyectadaRestantes >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadProyectadaRestantes)}</strong></div>
+                                      <div className="flex justify-between"><span className="text-slate-500">Utilidad Proyectada Restantes</span><strong className={r.utilidadProyectadaRestantes >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadProyectadaRestantes)}</strong></div>
+                                      {r.costoPerdidoBajas > 0 && (
+                                        <div className="flex justify-between" title="Lechón más alimento, sanidad y mano de obra que consumieron los animales muertos antes de morir"><span className="text-slate-500">Pérdida por Mortalidad</span><strong className="text-rose-600">-{formatearMoneda(r.costoPerdidoBajas)}</strong></div>
+                                      )}
+                                      <div className="flex justify-between border-t border-slate-100 pt-2"><span className="text-slate-600 font-bold">Resultado Total del Lote</span><strong className={(r.utilidadVentasParciales + r.utilidadProyectadaRestantes - r.costoPerdidoBajas) >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadVentasParciales + r.utilidadProyectadaRestantes - r.costoPerdidoBajas)}</strong></div>
                                     </div>
                                   </div>
 
@@ -5710,8 +7363,9 @@ return (
                       <div className="flex justify-between"><span>Vivos</span><strong>{r.cerdosRestantes}</strong></div>
                       <div className="flex justify-between"><span>Vendidos</span><strong>{r.cerdosVendidos}</strong></div>
                       <div className="flex justify-between"><span>Bajas</span><strong>{r.bajasTotales}</strong></div>
-                      <div className="flex justify-between"><span>Peso actual</span><strong>{r.pesoActual > 0 ? `${r.pesoActual.toFixed(1)} lb` : 'Sin peso'}</strong></div>
-                      <div className="flex justify-between"><span>FCA</span><strong>{r.fca > 0 ? r.fca.toFixed(2) : '—'}</strong></div>
+                      <div className="flex justify-between"><span>Peso actual{r.pesoEsEstimado ? ' (est.)' : ''}</span><strong>{r.pesoActual > 0 ? `${r.pesoEsEstimado ? '~' : ''}${r.pesoActual.toFixed(1)} lb` : 'Sin peso'}</strong></div>
+                      <div className="flex justify-between"><span>FCA</span><strong>{r.fca > 0 ? `${r.fca.toFixed(2)}${r.fcaEsConfiable ? '' : ' (no confiable)'}` : '—'}</strong></div>
+                      {r.costoPerdidoBajas > 0 && <div className="flex justify-between"><span>Pérdida por mortalidad</span><strong>-{formatearMoneda(r.costoPerdidoBajas)}</strong></div>}
                     </div>
                   </div>
                 </div>
@@ -5822,6 +7476,15 @@ return (
           <div>
             <p className="px-4 text-[10px] font-bold uppercase tracking-widest text-slate-600 mb-3">Operaciones</p>
             <div className="space-y-1.5">
+              <button onClick={() => { setVista('hoy'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'hoy' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
+                <CheckCircle size={18} className="mr-3" /> Hoy
+                {accionesDeHoy.filter(a => a.grupo !== 'semana').length > 0 && (
+                  <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                    {accionesDeHoy.filter(a => a.grupo !== 'semana').length}
+                  </span>
+                )}
+              </button>
+
               <button onClick={() => { setVista('dashboard'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'dashboard' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
                 <LayoutDashboard size={18} className="mr-3" /> Panel Principal
               </button>
@@ -5873,8 +7536,9 @@ return (
               <Menu size={20} />
             </button>
             <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center min-w-0 truncate">
+              {vista === 'hoy' && <><CheckCircle size={18} className="mr-2 text-emerald-600" /> Hoy</>}
               {vista === 'dashboard' && <><LayoutDashboard size={18} className="mr-2 text-emerald-600" /> Panel Principal</>}
-              {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600" /> Bodega Central Unificada</>}
+              {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600" /> Bodega Central</>}
               {vista === 'calendario' && <><Calendar size={18} className="mr-2 text-emerald-600" /> Calendario</>}
               {vista === 'corralDetail' && <><Box size={18} className="mr-2 text-emerald-600" /> Control de Corral</>}
               {vista === 'historial' && <><ClipboardList size={18} className="mr-2 text-indigo-600" /> Historial de Lotes Finalizados</>}
@@ -5889,6 +7553,7 @@ return (
           <div className="text-[10px] sm:text-xs font-black text-slate-400 uppercase tracking-widest truncate max-w-full">{new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
         </header>
         <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50/50">
+          {vista === 'hoy' && renderHoy()}
           {vista === 'dashboard' && renderDashboard()}
           {vista === 'bodega' && renderBodega()}
           {vista === 'calendario' && renderCalendario()}
