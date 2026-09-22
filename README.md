@@ -1,6 +1,6 @@
 # AgroControl Porcino
 
-Aplicación web y de escritorio para controlar lotes porcinos, alimentación, inventario, sanidad, pesajes, ventas y rentabilidad.
+Aplicación web para controlar lotes porcinos, alimentación, inventario, sanidad, pesajes, ventas y rentabilidad.
 
 ## Requisitos
 
@@ -29,16 +29,16 @@ Los datos de la granja predeterminada usan el identificador `agrocontrol-local`.
 - `npm run lint`: análisis estático.
 - `npm test`: pruebas de cálculos productivos y financieros.
 - `npm run build`: compilación web.
-- `npm run build-exe`: instalador de Windows.
+- `npm run preview`: sirve localmente la compilación de `dist/`.
 - `npm run deploy:rules`: reglas de Firestore.
 - `npm run deploy:functions`: proxy seguro del asistente.
 
 ## Seguridad
 
-- Electron ejecuta el renderer aislado, sin acceso a Node.
+- El frontend se sirve con una Content Security Policy restrictiva definida en `index.html`.
 - La IA se consume mediante una Function autenticada, con App Check y secreto administrado.
 - Firestore requiere membresía activa y aplica permisos por rol.
-- No se deben guardar claves privadas, archivos `.env`, instaladores ni artefactos de Firebase en el repositorio.
+- No se deben guardar claves privadas, archivos `.env` ni artefactos de Firebase en el repositorio.
 
 La clave de Gemini que estuvo incluida en versiones anteriores debe revocarse manualmente desde Google Cloud Console. Retirarla del código no invalida copias ya distribuidas.
 

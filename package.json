@@ -3,7 +3,6 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "main": "main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -11,9 +10,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
-    "build-exe": "npm run build && electron-builder --win",
     "deploy:rules": "firebase deploy --only firestore:rules",
-    "deploy:functions": "firebase deploy --only functions"
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "deploy": "npm run build && firebase deploy"
   },
   "dependencies": {
     "firebase": "^12.12.1",
@@ -24,11 +24,9 @@
     "react-markdown": "^10.1.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
     "@eslint/js": "^9.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
-    "electron": "^30.0.0",
-    "electron-builder": "^24.13.3",
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.0",
@@ -38,20 +36,5 @@
     "tailwindcss": "^3.4.17",
     "vite": "^5.2.0",
     "vitest": "^3.0.0"
-  },
-  "build": {
-    "appId": "com.porcicontrol.app",
-    "productName": "Porcicontrol",
-    "directories": {
-      "output": "instalador-final"
-    },
-    "win": {
-      "target": "nsis"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
-    }
   }
 }

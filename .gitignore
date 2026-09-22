@@ -17,7 +17,6 @@ dist-ssr
 !.env.production
 .firebase/
 functions/node_modules/
-instalador-final/
 refactor.cjs
 refactor.js
 test_gemini.js
