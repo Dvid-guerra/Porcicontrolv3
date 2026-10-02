@@ -64,6 +64,38 @@ describe('calculateLotStatistics', () => {
     expect(result.fca).toBeCloseTo(900 / 200);
     expect(result.adg).toBeCloseTo(200 / 90);
   });
+
+  it('ignora por completo una venta anulada', () => {
+    const ventaReal = { loteId: lot.id, fecha: '2026-01-06', cantidadCerdos: 2, totalLibras: 120, totalVenta: 1200 };
+    const ventaDuplicadaAnulada = { ...ventaReal, anulada: true, motivoAnulacion: 'Báscula registrada dos veces' };
+
+    const conDuplicado = calculateLotStatistics({
+      lot,
+      sales: [ventaReal, ventaDuplicadaAnulada],
+      feedings: [{ loteId: lot.id, cantidadLb: 900, costo: 450 }],
+      weights: [
+        { loteId: lot.id, fecha: '2026-01-01', pesoPromedio: 40 },
+        { loteId: lot.id, fecha: '2026-01-11', pesoPromedio: 60 }
+      ]
+    });
+
+    const soloVentaReal = calculateLotStatistics({
+      lot,
+      sales: [ventaReal],
+      feedings: [{ loteId: lot.id, cantidadLb: 900, costo: 450 }],
+      weights: [
+        { loteId: lot.id, fecha: '2026-01-01', pesoPromedio: 40 },
+        { loteId: lot.id, fecha: '2026-01-11', pesoPromedio: 60 }
+      ]
+    });
+
+    expect(conDuplicado.cantidadVendida).toBe(soloVentaReal.cantidadVendida);
+    expect(conDuplicado.cantidadActual).toBe(soloVentaReal.cantidadActual);
+    expect(conDuplicado.librasVendidas).toBe(soloVentaReal.librasVendidas);
+    expect(conDuplicado.ingresoRealVentas).toBe(soloVentaReal.ingresoRealVentas);
+    expect(conDuplicado.pesoProducidoLb).toBe(soloVentaReal.pesoProducidoLb);
+    expect(conDuplicado.ventasLote).toHaveLength(1);
+  });
 });
 
 describe('proyeccion sobre la meta de peso', () => {

@@ -189,7 +189,9 @@ export function calculateLotStatistics({
 
   const lotDeaths = deaths.filter((item) => item.loteId === lot.id);
   const lotFeedings = feedings.filter((item) => item.loteId === lot.id);
-  const lotSales = sales.filter((item) => item.loteId === lot.id);
+  // Una venta anulada (báscula registrada por error) sigue guardada para el historial
+  // del corral, pero no existe para la matematica: ni cerdos, ni libras, ni ingreso.
+  const lotSales = sales.filter((item) => item.loteId === lot.id && !item.anulada);
   const lotWeights = weights
     .filter((item) => item.loteId === lot.id && Number(item.pesoPromedio) > 0)
     .toSorted((a, b) => String(a.fecha || '').localeCompare(String(b.fecha || '')));

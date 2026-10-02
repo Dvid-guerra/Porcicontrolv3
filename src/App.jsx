@@ -4,7 +4,7 @@ import {
   ChevronRight, ClipboardList, CheckCircle, Trash2, TrendingUp, PiggyBank,
   AlertTriangle, HeartPulse, Receipt, PieChart, Calculator, Leaf, Printer, X, Clock,
   Archive, Box, Package, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
-  Beaker, ShoppingCart, FileText, Download, LogOut, Menu
+  Beaker, ShoppingCart, FileText, Download, LogOut, Menu, Ban, RotateCcw
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { calculateLotStatistics, parseLocalDate } from './domain/lotStatistics.js';
@@ -608,6 +608,10 @@ function Porcicontrol({ user, db, appId }) {
   const listGastosExtra = safeArr(gastosExtra);
   const listCompras = safeArr(comprasBodega);
   const listVentas = safeArr(ventas);
+  // Una venta anulada se queda en el historial del corral como evidencia de lo que pasó,
+  // pero no puede tocar ningún número: ni inventario vivo, ni libras, ni ingresos. Todo
+  // cálculo usa listVentasActivas; solo la pantalla de historial mira listVentas completo.
+  const listVentasActivas = listVentas.filter(v => !v.anulada);
   // El protocolo de la granja es fijo: sueros, desparasitación x2 e Innosure cuando hay
   // machos enteros. Cualquier otra cosa (una enfermedad puntual) se registra como
   // tratamiento médico, no como paso del protocolo.
@@ -662,6 +666,9 @@ function Porcicontrol({ user, db, appId }) {
   const [ventaPesos, setVentaPesos] = useState([]);
   const [ventaPrecio, setVentaPrecio] = useState(0);
   const [pesoInputVenta, setPesoInputVenta] = useState('');
+  // Venta cuyo formulario de anulación está abierto en el historial del corral.
+  const [ventaAnulandoId, setVentaAnulandoId] = useState(null);
+  const [motivoAnulacionVenta, setMotivoAnulacionVenta] = useState('');
   const [tipoReporteImpresion, setTipoReporteImpresion] = useState('interno');
   const [simuladorMuertesExtra, setSimuladorMuertesExtra] = useState(0);
   const [ingresoMachos, setIngresoMachos] = useState(0);
@@ -834,7 +841,7 @@ function Porcicontrol({ user, db, appId }) {
     const lotesConStats = listLotes.map(lote => {
       const stats = calcularEstadisticasLote(lote);
       const corral = listCorrales.find(c => c.id === lote.corralId);
-      const ventasLote = listVentas.filter(v => v.loteId === lote.id).sort(byDateDesc);
+      const ventasLote = listVentasActivas.filter(v => v.loteId === lote.id).sort(byDateDesc);
       const bajasLote = listBajas.filter(b => b.loteId === lote.id).sort(byDateDesc);
       const alimentosLote = listAlimentos.filter(a => a.loteId === lote.id).sort(byDateDesc);
       const pesosLote = listPesos.filter(p => p.loteId === lote.id && p.pesoPromedio).sort(byDateDesc);
@@ -1002,7 +1009,7 @@ function Porcicontrol({ user, db, appId }) {
       ...listUsosMedicos.map(u => ({ tipo: 'salida', fecha: u.fecha, producto: u.nombre, cantidad: u.cantidad, unidad: u.unidad, costo: u.costo, loteId: u.loteId }))
     ], 12);
 
-    const ventasRecientes = latest(listVentas, 10).map(v => {
+    const ventasRecientes = latest(listVentasActivas, 10).map(v => {
       const lote = listLotes.find(l => l.id === v.loteId);
       const corral = listCorrales.find(c => c.id === lote?.corralId || c.id === v.corralId);
       return {
@@ -1556,7 +1563,7 @@ ${JSON.stringify(contextoGranja)}`;
         lot: lote,
         deaths: listBajas,
         feedings: listAlimentos,
-        sales: listVentas,
+        sales: listVentasActivas,
         weights: listPesos,
         vaccines: listVacunas,
         extraExpenses: listGastosExtra,
@@ -1605,7 +1612,7 @@ ${JSON.stringify(contextoGranja)}`;
       const sacosAComprar = Math.ceil(librasAComprarReal / lbsPorSaco);
       return { nombre, librasAComprarReal, sacosAComprar, invCentral, faltanteGlobal, lbsPorSaco };
     }).filter(item => item.sacosAComprar > 0);
-  }, [listLotes, listBajas, listAlimentos, listVentas, listPesos, listVacunas, listGastosExtra, inventarioCentral, listFormulas, listCatAlimentos, listCatIngredientes, pesoAlertaMezcla]);
+  }, [listLotes, listBajas, listAlimentos, listVentasActivas, listPesos, listVacunas, listGastosExtra, inventarioCentral, listFormulas, listCatAlimentos, listCatIngredientes, pesoAlertaMezcla]);
 
   // --- ESTADÍSTICAS DEL LOTE ---
   function calcularEstadisticasLote(lote, muertesExtraHipoteticas = 0) {
@@ -1613,7 +1620,7 @@ ${JSON.stringify(contextoGranja)}`;
       lot: lote,
       deaths: listBajas,
       feedings: listAlimentos,
-      sales: listVentas,
+      sales: listVentasActivas,
       weights: listPesos,
       vaccines: listVacunas,
       extraExpenses: listGastosExtra,
@@ -2462,7 +2469,7 @@ ${JSON.stringify(contextoGranja)}`;
       (orden[a.grupo] - orden[b.grupo]) || (a.prioridad - b.prioridad) || a.corral.localeCompare(b.corral)
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listLotes, listCorrales, listTareasSanidad, listBajas, listAlimentos, listVentas, listPesos, listVacunas, listGastosExtra]);
+  }, [listLotes, listCorrales, listTareasSanidad, listBajas, listAlimentos, listVentasActivas, listPesos, listVacunas, listGastosExtra]);
 
   // Corrales activos a los que les falta alguna tarea del protocolo. En vez de un boton
   // abstracto de "sincronizar", el calendario muestra exactamente qué falta.
@@ -2906,6 +2913,106 @@ ${JSON.stringify(contextoGranja)}`;
       setTipoReporteImpresion('cliente');
       setVista('resumenVenta');
     });
+  };
+
+  // --- ANULACIÓN DE VENTAS ---
+  // Una venta mal registrada (lo típico: la misma báscula guardada dos veces) no se borra:
+  // se anula. El registro queda en el historial del corral con fecha, responsable y motivo,
+  // pero deja de contar para inventario vivo, libras vendidas, FCA, GMD e ingresos.
+  const handleAnularVenta = (venta) => {
+    const libras = getVentaLibras(venta);
+    const motivo = motivoAnulacionVenta.trim();
+    const corralNombre = listCorrales.find(c => c.id === venta.corralId)?.nombre || corralSeleccionado?.nombre || 'Corral';
+    const lote = listLotes.find(l => l.id === venta.loteId);
+
+    pedirConfirmacion(
+      'Anular Venta de Báscula',
+      `Se anulará la venta del ${venta.fecha}: ${venta.cantidadCerdos} cerdos · ${libras.toFixed(1)} lb · ${formatearMoneda(venta.totalVenta || 0)}. Los cerdos vuelven al inventario vivo del corral y el ingreso se descuenta de las finanzas. El registro queda archivado como anulado.`,
+      async () => {
+        try {
+          await setVentas(prev => safeArr(prev).map(v => v.id === venta.id
+            ? {
+              ...v,
+              anulada: true,
+              anuladaEn: new Date().toISOString(),
+              anuladaPor: user?.displayName || user?.email || 'Usuario',
+              motivoAnulacion: motivo
+            }
+            : v));
+          setVentaAnulandoId(null);
+          setMotivoAnulacionVenta('');
+          emitirNotificacionPush({
+            tipo: 'venta',
+            titulo: 'Venta anulada',
+            descripcion: `${venta.cantidadCerdos} cerdos · ${libras.toFixed(1)} lb · ${formatearMoneda(venta.totalVenta || 0)}`,
+            detalle: motivo || 'Sin motivo especificado',
+            corralId: venta.corralId || '',
+            corralNombre,
+            loteId: venta.loteId || '',
+            loteNombre: lote?.nombre || lote?.raza || 'Lote',
+            entidad: { tipo: 'venta', id: venta.id },
+            severidad: 'critical',
+            visibleMs: CRITICAL_NOTIFICATION_VISIBLE_MS
+          });
+        } catch (error) {
+          console.error('Error anulando venta:', error);
+          mostrarAlerta('Error', 'No se pudo anular la venta. Volvé a intentarlo.');
+        }
+      }
+    );
+  };
+
+  // Deshacer una anulación equivocada. Solo se permite si el corral todavía tiene cerdos
+  // vivos suficientes para absorber de nuevo esa salida.
+  const handleRestaurarVenta = (venta) => {
+    const lote = listLotes.find(l => l.id === venta.loteId);
+    const cerdos = Number(venta.cantidadCerdos) || 0;
+    if (lote) {
+      const stats = calcularEstadisticasLote(lote);
+      if (stats && cerdos > stats.cantidadActual) {
+        return mostrarAlerta(
+          'No se puede restaurar',
+          `Esta venta saca ${cerdos} cerdos, pero el corral solo tiene ${stats.cantidadActual} vivos. Anulá primero las bajas o ventas que sobren.`
+        );
+      }
+    }
+    pedirConfirmacion(
+      'Restaurar Venta',
+      `La venta del ${venta.fecha} volverá a contar: ${cerdos} cerdos salen otra vez del inventario y ${formatearMoneda(venta.totalVenta || 0)} regresan a los ingresos.`,
+      async () => {
+        try {
+          await setVentas(prev => safeArr(prev).map(v => {
+            if (v.id !== venta.id) return v;
+            // Se quitan las marcas de anulación en vez de ponerlas en false/undefined:
+            // Firestore no acepta undefined y el registro vuelve a su forma original.
+            const vigente = { ...v };
+            delete vigente.anulada;
+            delete vigente.anuladaEn;
+            delete vigente.anuladaPor;
+            delete vigente.motivoAnulacion;
+            return vigente;
+          }));
+        } catch (error) {
+          console.error('Error restaurando venta:', error);
+          mostrarAlerta('Error', 'No se pudo restaurar la venta. Volvé a intentarlo.');
+        }
+      }
+    );
+  };
+
+  const handleEliminarVentaAnulada = (venta) => {
+    pedirConfirmacion(
+      'Borrar Venta Anulada',
+      `El registro del ${venta.fecha} desaparecerá del historial para siempre. No afecta ningún número porque ya está anulado, pero se pierde la constancia del error.`,
+      async () => {
+        try {
+          await setVentas(prev => safeArr(prev).filter(v => v.id !== venta.id));
+        } catch (error) {
+          console.error('Error eliminando venta anulada:', error);
+          mostrarAlerta('Error', 'No se pudo borrar el registro. Volvé a intentarlo.');
+        }
+      }
+    );
   };
 
   const confirmarVentaYCerrar = () => {
@@ -5242,6 +5349,7 @@ return (
                 { id: 'alimento', icon: Wheat, label: 'Alimentación (Tolvas)' },
                 { id: 'peso', icon: Scale, label: 'Control Peso' },
                 { id: 'sanidad', icon: HeartPulse, label: 'Sanidad & Bajas' },
+                { id: 'ventas', icon: Receipt, label: 'Ventas en Báscula' },
                 { id: 'finanzas', icon: Calculator, label: 'Finanzas & Simulación' },
               ].map(t => (
                 <button key={t.id} onClick={() => setTabActiva(t.id)} className={`flex items-center px-6 py-4 font-bold text-sm transition-colors border-b-2 shrink-0 ${tabActiva === t.id ? 'border-emerald-500 text-emerald-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}>
@@ -6039,6 +6147,217 @@ return (
               )}
 
               {/* TAB: FINANZAS Y SIMULADOR */}
+              {/* TAB: VENTAS EN BÁSCULA */}
+              {tabActiva === 'ventas' && (() => {
+                const ventasDelLote = listVentas
+                  .filter(v => v.loteId === loteActivo.id)
+                  .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')) || String(b.id || '').localeCompare(String(a.id || '')));
+                const ventasVigentes = ventasDelLote.filter(v => !v.anulada);
+                const ventasAnuladas = ventasDelLote.filter(v => v.anulada);
+                const cerdosVendidos = ventasVigentes.reduce((s, v) => s + (Number(v.cantidadCerdos) || 0), 0);
+                const librasVendidas = ventasVigentes.reduce((s, v) => s + getVentaLibras(v), 0);
+                const ingresoVentas = ventasVigentes.reduce((s, v) => s + (Number(v.totalVenta) || 0), 0);
+
+                // Dos registros vigentes con los mismos cerdos, las mismas libras y el mismo
+                // total casi siempre son la misma bascula guardada dos veces. La fecha queda
+                // FUERA de la firma a proposito: el error tipico es volver a registrar la misma
+                // bascula al dia siguiente, y con la fecha dentro esos casos no se detectaban.
+                const firmaVenta = (v) => `${Number(v.cantidadCerdos) || 0}|${getVentaLibras(v).toFixed(1)}|${(Number(v.totalVenta) || 0).toFixed(2)}`;
+                const conteoFirmas = ventasVigentes.reduce((acc, v) => {
+                  const firma = firmaVenta(v);
+                  acc[firma] = (acc[firma] || 0) + 1;
+                  return acc;
+                }, {});
+                const hayDuplicados = Object.values(conteoFirmas).some(n => n > 1);
+
+                const fechaLarga = (fecha) => fecha
+                  ? new Date(`${fecha}T00:00:00`).toLocaleDateString('es-GT', { day: '2-digit', month: 'long', year: 'numeric' })
+                  : 'Sin fecha';
+                const fechaHoraAnulacion = (iso) => {
+                  if (!iso) return '';
+                  const d = new Date(iso);
+                  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('es-GT', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                };
+
+                return (
+                  <div className="space-y-6 animate-in fade-in duration-300 text-xs">
+                    <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                      <div>
+                        <h3 className="font-extrabold text-slate-800 text-sm flex items-center gap-1.5"><Receipt size={18} className="text-emerald-600" /> Historial de Ventas en Báscula</h3>
+                        <p className="text-[11px] text-slate-450 font-medium leading-relaxed mt-1 max-w-2xl">
+                          Cada báscula registrada en este corral, en orden. Si una venta se guardó por error, anulala: el registro queda archivado con su motivo y los cerdos, las libras y el dinero vuelven a su lugar.
+                        </p>
+                      </div>
+                      <button onClick={prepararVentaLote} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl shadow-lg shadow-emerald-600/10 flex items-center transition-all gap-1.5 shrink-0 self-start sm:self-end">
+                        <Scale size={16} /> Vender en Báscula
+                      </button>
+                    </div>
+
+                    {hayDuplicados && (
+                      <div className="bg-amber-50/60 border border-amber-300/60 rounded-2xl p-3.5 flex items-start gap-2.5">
+                        <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-amber-900 font-medium leading-relaxed">
+                          Hay ventas vigentes <strong>idénticas</strong> en este corral: mismos cerdos, mismas libras y mismo total, aunque la fecha no coincida. Revisá las marcadas abajo: si la misma báscula se registró dos veces, anulá la repetida.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-2">Ventas Vigentes</p>
+                        <p className="text-2xl font-black text-slate-900 leading-none">{ventasVigentes.length}</p>
+                        {ventasAnuladas.length > 0 && <p className="text-[10px] font-bold text-rose-500 mt-1.5">{ventasAnuladas.length} anulada{ventasAnuladas.length === 1 ? '' : 's'}</p>}
+                      </div>
+                      <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-2">Cerdos Vendidos</p>
+                        <p className="text-2xl font-black text-slate-900 leading-none">{cerdosVendidos}</p>
+                        <p className="text-[10px] font-bold text-slate-400 mt-1.5">de {loteActivo.cantidad} ingresados</p>
+                      </div>
+                      <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-2">Libras de Báscula</p>
+                        <p className="text-2xl font-black text-blue-600 leading-none">{librasVendidas.toFixed(1)}</p>
+                        <p className="text-[10px] font-bold text-slate-400 mt-1.5">lb pesadas</p>
+                      </div>
+                      <div className="bg-emerald-50/60 border border-emerald-100 rounded-2xl p-4">
+                        <p className="text-[9px] font-black text-emerald-700/60 uppercase tracking-widest leading-none mb-2">Ingreso Real</p>
+                        <p className="text-2xl font-black text-emerald-600 leading-none">{formatearMoneda(ingresoVentas)}</p>
+                        <p className="text-[10px] font-bold text-emerald-700/50 mt-1.5">cobrado en báscula</p>
+                      </div>
+                    </div>
+
+                    {ventasDelLote.length === 0 ? (
+                      <div className="bg-white border border-slate-100 rounded-2xl p-10 text-center">
+                        <Receipt size={36} className="text-slate-300 mx-auto mb-3" />
+                        <p className="text-slate-500 font-bold text-sm">Todavía no hay ventas en este corral</p>
+                        <p className="text-[11px] text-slate-400 font-medium mt-1">Cuando registres una báscula, aparecerá aquí y podrás anularla si algo salió mal.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {ventasDelLote.map(venta => {
+                          const libras = getVentaLibras(venta);
+                          const cerdos = Number(venta.cantidadCerdos) || 0;
+                          const promedio = cerdos > 0 ? libras / cerdos : 0;
+                          const anulada = Boolean(venta.anulada);
+                          const sospechosa = !anulada && conteoFirmas[firmaVenta(venta)] > 1;
+                          const pesos = Array.isArray(venta.pesosVenta) ? venta.pesosVenta : [];
+                          const anulandoEsta = ventaAnulandoId === venta.id;
+
+                          return (
+                            <div key={venta.id} className={`rounded-2xl border overflow-hidden transition-colors ${anulada ? 'bg-slate-50/80 border-slate-200' : sospechosa ? 'bg-white border-amber-300/70 shadow-sm' : 'bg-white border-slate-100 shadow-sm'}`}>
+                              <div className="p-4 sm:p-5 space-y-4">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center flex-wrap gap-2">
+                                      <p className={`font-extrabold text-sm ${anulada ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{fechaLarga(venta.fecha)}</p>
+                                      {anulada ? (
+                                        <span className="bg-rose-50 border border-rose-200 text-rose-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider">Anulada</span>
+                                      ) : (
+                                        <span className="bg-emerald-50 border border-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider">Vigente</span>
+                                      )}
+                                      {sospechosa && (
+                                        <span className="bg-amber-50 border border-amber-200 text-amber-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider">Posible duplicado</span>
+                                      )}
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 font-semibold mt-1">Báscula · {cerdos} cerdo{cerdos === 1 ? '' : 's'}</p>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    {anulada ? (
+                                      <>
+                                        <button onClick={() => handleRestaurarVenta(venta)} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 font-bold py-2 px-3 rounded-xl transition-colors flex items-center gap-1.5">
+                                          <RotateCcw size={14} /> Restaurar
+                                        </button>
+                                        <button onClick={() => handleEliminarVentaAnulada(venta)} title="Borrar el registro del historial" className="text-slate-300 hover:text-rose-500 p-2 rounded-lg transition-colors">
+                                          <Trash2 size={15} />
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        onClick={() => { setVentaAnulandoId(anulandoEsta ? null : venta.id); setMotivoAnulacionVenta(''); }}
+                                        className={`font-bold py-2 px-3 rounded-xl transition-colors flex items-center gap-1.5 border ${anulandoEsta ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-rose-50 border-rose-200/60 text-rose-700 hover:bg-rose-600 hover:text-white hover:border-rose-600'}`}
+                                      >
+                                        {anulandoEsta ? <><X size={14} /> Cancelar</> : <><Ban size={14} /> Anular</>}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 ${anulada ? 'opacity-50' : ''}`}>
+                                  <div className="bg-slate-50/80 border border-slate-100 rounded-xl p-3">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider leading-none mb-1.5">Libras Totales</p>
+                                    <p className={`font-black text-base ${anulada ? 'text-slate-500 line-through' : 'text-blue-600'}`}>{libras.toFixed(1)} lb</p>
+                                  </div>
+                                  <div className="bg-slate-50/80 border border-slate-100 rounded-xl p-3">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider leading-none mb-1.5">Peso Promedio</p>
+                                    <p className={`font-black text-base ${anulada ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{promedio.toFixed(1)} lb</p>
+                                  </div>
+                                  <div className="bg-slate-50/80 border border-slate-100 rounded-xl p-3">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider leading-none mb-1.5">Precio por Libra</p>
+                                    <p className={`font-black text-base ${anulada ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{formatearMoneda(Number(venta.precioLibra) || 0)}</p>
+                                  </div>
+                                  <div className="bg-slate-50/80 border border-slate-100 rounded-xl p-3">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider leading-none mb-1.5">Total Cobrado</p>
+                                    <p className={`font-black text-base ${anulada ? 'text-slate-500 line-through' : 'text-emerald-600'}`}>{formatearMoneda(Number(venta.totalVenta) || 0)}</p>
+                                  </div>
+                                </div>
+
+                                {pesos.length > 0 && (
+                                  <details className="group">
+                                    <summary className="cursor-pointer text-[10px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-wider list-none flex items-center gap-1 select-none">
+                                      <ChevronRight size={13} className="transition-transform group-open:rotate-90" /> Ver los {pesos.length} pesos de esta báscula
+                                    </summary>
+                                    <div className="flex flex-wrap gap-1.5 mt-3">
+                                      {pesos.map((item, index) => (
+                                        <span key={index} className="bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded-lg text-[10px] font-bold">
+                                          #{item?.numero ?? index + 1}: {Number(typeof item === 'number' ? item : item?.peso || 0).toFixed(1)} lb
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </details>
+                                )}
+
+                                {anulada && (
+                                  <div className="bg-rose-50/60 border border-rose-200/60 rounded-xl p-3.5 space-y-1">
+                                    <p className="text-[10px] font-black text-rose-700 uppercase tracking-wider leading-none">Anulada</p>
+                                    <p className="text-[11px] text-rose-900 font-medium leading-relaxed">
+                                      {venta.motivoAnulacion ? venta.motivoAnulacion : 'Sin motivo especificado.'}
+                                    </p>
+                                    <p className="text-[10px] text-rose-700/60 font-semibold pt-1">
+                                      {venta.anuladaPor || 'Usuario'}{fechaHoraAnulacion(venta.anuladaEn) ? ` · ${fechaHoraAnulacion(venta.anuladaEn)}` : ''}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {anulandoEsta && (
+                                  <div className="bg-rose-50/40 border border-rose-200/60 rounded-xl p-4 space-y-3 animate-in slide-in-from-top-1 duration-200">
+                                    <div>
+                                      <label className="block text-[10px] font-black text-rose-700 uppercase tracking-wider mb-1.5">Motivo de la anulación</label>
+                                      <input
+                                        type="text"
+                                        value={motivoAnulacionVenta}
+                                        onChange={(e) => setMotivoAnulacionVenta(e.target.value)}
+                                        placeholder="Ej: la misma báscula se guardó dos veces"
+                                        className="w-full p-2.5 border border-rose-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 font-semibold text-slate-700"
+                                      />
+                                    </div>
+                                    <p className="text-[10px] text-rose-900/70 font-medium leading-relaxed">
+                                      Al anular, <strong>{cerdos} cerdo{cerdos === 1 ? '' : 's'}</strong> regresan al inventario vivo, se descuentan <strong>{libras.toFixed(1)} lb</strong> de la producción y <strong>{formatearMoneda(Number(venta.totalVenta) || 0)}</strong> salen de los ingresos. El registro no se borra.
+                                    </p>
+                                    <button onClick={() => handleAnularVenta(venta)} className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-xl transition-colors shadow-lg shadow-rose-600/10 uppercase tracking-wider flex items-center justify-center gap-1.5">
+                                      <Ban size={15} /> Confirmar anulación
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {tabActiva === 'finanzas' && (
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 animate-in fade-in duration-300 text-xs">
                   <div className="xl:col-span-4 space-y-6">
@@ -6492,7 +6811,7 @@ return (
     const maxPeso = Math.max(...historialPesos.map(p => p.pesoPromedio), 220, 1);
     const totalGastosParaGrafica = (st.costoInvertidoTotal + (loteActivo.manoObra || 0)) || 1;
 
-    const ultimaVenta = listVentas.filter(v => v.loteId === loteActivo.id).pop();
+    const ultimaVenta = listVentasActivas.filter(v => v.loteId === loteActivo.id).pop();
     const ticketCerdos = ultimaVenta ? (ultimaVenta.cantidadCerdos || 0) : st.cantidadActual;
     const ticketLibras = ultimaVenta ? (ultimaVenta.totalLibras || 0) : (st.pesoParaProyeccion * st.cantidadActual);
     const ticketPrecio = ultimaVenta ? (ultimaVenta.precioLibra || 0) : loteActivo.precioVentaLibra;
@@ -6755,7 +7074,7 @@ return (
     const resumenPorLote = listLotes.map(lote => {
       const stats = calcularEstadisticasLote(lote);
       const bajasLote = listBajas.filter(b => b.loteId === lote.id);
-      const ventasLote = [...listVentas.filter(v => v.loteId === lote.id)].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+      const ventasLote = [...listVentasActivas.filter(v => v.loteId === lote.id)].sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
 
       const costoLechones = stats?.costoLechones || 0;
       const costoAlimento = stats?.costoAlimento || 0;
