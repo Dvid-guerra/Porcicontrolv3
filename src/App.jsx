@@ -4,10 +4,24 @@ import {
   ChevronRight, ClipboardList, CheckCircle, Trash2, TrendingUp, PiggyBank,
   AlertTriangle, HeartPulse, Receipt, PieChart, Calculator, Leaf, Printer, X, Clock,
   Archive, Box, Package, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
-  Beaker, ShoppingCart, FileText, Download, LogOut, Menu, Ban, RotateCcw
+  Beaker, ShoppingCart, FileText, Download, LogOut, Menu, Ban, RotateCcw, QrCode, Camera, ScanLine, Check,
+  Flashlight, FlashlightOff, RefreshCw, Wifi, WifiOff, Smartphone
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { calculateLotStatistics, parseLocalDate } from './domain/lotStatistics.js';
+import {
+  buildCorralQrPayload,
+  parseCorralQrPayload,
+  resolverContextoTolvaQr,
+  calcularDescuentoTolva,
+  encodeQrMatrix
+} from './domain/qrTolva.js';
+import {
+  calcularTamanoCaptura,
+  crearControlEscaneoRepetido,
+  describirErrorCamara,
+  soportaDeteccionNativaQr
+} from './domain/qrScanner.js';
 import {
   INNOSURE_PLANS,
   PLAN_INNOSURE_POR_DEFECTO,
@@ -16,6 +30,25 @@ import {
   planificarSincronizacion,
   validarFechaDosis
 } from './domain/sanitaryPlan.js';
+import {
+  formatLocalIsoDate,
+  addDaysLocalIso,
+  evaluarPesoBascula,
+  calcularProgresoEmbarque,
+  construirClaveBorradorBascula,
+  serializarBorradorBascula,
+  parsearBorradorBascula,
+  calcularPesoSchaefferLb,
+  resumirMuestraPesaje,
+  construirEstadoNavegacion,
+  sonEstadosNavegacionIguales
+} from './domain/fieldUx.js';
+import {
+  crearFirestoreConCacheOffline,
+  useCloudStorage,
+  useOfflineSyncStatus,
+  ejecutarTransaccionMultiClaveOffline
+} from './hooks/useOfflineCloudSync.js';
 
 // --- IMPORTACIONES DE FIREBASE NUBE ---
 import { initializeApp } from 'firebase/app';
@@ -28,7 +61,6 @@ import {
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth';
-import { getFirestore, doc, onSnapshot, enableIndexedDbPersistence, runTransaction } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 
@@ -56,10 +88,10 @@ if (!firebaseConfig.apiKey || !firebaseConfig.projectId || !firebaseConfig.appId
   throw new Error('Falta la configuración de Firebase. Copia .env.example a .env.local y completa sus valores.');
 }
 
-// Inicializar Firebase y Proveedores
+// Inicializar Firebase y Proveedores (con caché persistente multi-pestaña para galpón offline)
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+const db = crearFirestoreConCacheOffline(app);
 const cloudFunctions = getFunctions(app);
 
 if (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY) {
@@ -69,85 +101,8 @@ if (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY) {
   });
 }
 
-// --- ACTIVAR MODO OFFLINE DE FIREBASE (BÓVEDA LOCAL) ---
-enableIndexedDbPersistence(db).catch((err) => {
-  if (err.code === 'failed-precondition') {
-    console.log('El modo offline solo funciona si tienes una sola pestaña abierta.');
-  } else if (err.code === 'unimplemented') {
-    console.log('Este navegador no soporta almacenamiento offline.');
-  }
-});
-
-
 const googleProvider = new GoogleAuthProvider();
 const globalAppId = typeof __app_id !== 'undefined' ? __app_id : 'agrocontrol-local';
-
-// --- NUEVO HOOK: BASE DE DATOS EN LA NUBE ---
-// Reemplaza a useLocalStorage. Escucha y guarda datos directo en Google Firebase.
-function useCloudStorage(key, initialValue, user, dbInstance, appId) {
-  const initialValueRef = React.useRef(initialValue);
-  const [state, setStateInternal] = useState(() => initialValueRef.current);
-  const [isLoaded, setIsLoaded] = useState(false);
-
-  useEffect(() => {
-    if (!user || !dbInstance || !appId) {
-      setIsLoaded(true);
-      return;
-    }
-
-    // RUTA COMPARTIDA: Tú y tu papá miran a la misma carpeta
-    const docRef = doc(dbInstance, 'artifacts', appId, 'public', 'data', 'granja_compartida', key);
-
-    // onSnapshot escucha los cambios en tiempo real. Si actualizas en tu celular, se refleja aquí.
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data().data;
-        if (Array.isArray(initialValueRef.current) && !Array.isArray(data)) {
-          setStateInternal(initialValueRef.current);
-        } else {
-          setStateInternal(data !== undefined ? data : initialValueRef.current);
-        }
-      } else {
-        setStateInternal(initialValueRef.current);
-      }
-      setIsLoaded(true);
-    }, (error) => {
-      console.error("Error conectando a la base de datos:", key, error);
-      setIsLoaded(true);
-    });
-
-    return () => unsubscribe();
-  }, [key, user, dbInstance, appId]);
-
-  const setValue = async (value) => {
-    const previous = state;
-    const optimisticNext = value instanceof Function ? value(state) : value;
-    setStateInternal(optimisticNext);
-
-    if (!user || !dbInstance || !appId) {
-      return optimisticNext;
-    }
-
-    const docRef = doc(dbInstance, 'artifacts', appId, 'public', 'data', 'granja_compartida', key);
-    try {
-      const next = await runTransaction(dbInstance, async (transaction) => {
-        const snapshot = await transaction.get(docRef);
-      const remoteValue = snapshot.exists() ? snapshot.data().data : initialValueRef.current;
-        const valueToStore = value instanceof Function ? value(remoteValue) : value;
-        transaction.set(docRef, { data: valueToStore, updatedAt: Date.now(), updatedBy: user.uid });
-        return valueToStore;
-      });
-      setStateInternal(next);
-      return next;
-    } catch (error) {
-      console.error("Error guardando en la nube:", key, error);
-      setStateInternal(previous);
-      throw error;
-    }
-  };
-
-  return [state, setValue, isLoaded];
-}
 
 // --- DATOS POR DEFECTO ---
 
@@ -381,15 +336,70 @@ const addDaysToDate = (dateStr, days) => {
   return result.toLocaleDateString('es-GT', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
-const addDaysToIsoDate = (dateStr, days) => {
-  const result = new Date(`${dateStr}T00:00:00`);
-  result.setDate(result.getDate() + days);
-  return result.toISOString().split('T')[0];
-};
+const addDaysToIsoDate = (dateStr, days) => addDaysLocalIso(dateStr, days);
 
 const safeArr = (val, fallback = []) => Array.isArray(val) ? val : fallback;
 
-const todayIso = () => new Date().toISOString().split('T')[0];
+const todayIso = () => formatLocalIsoDate();
+
+// ISO/IEC 18004 exige 4 módulos de margen blanco alrededor del símbolo. Con 3 los
+// lectores fallan cuando el rótulo lleva un borde impreso pegado al código.
+const ZONA_SILENCIO_QR = 4;
+
+// Renderizador SVG de Código QR 100% offline (ideal para pantalla e impresión PDF)
+const CodigoQrSvg = ({ valor, size = 160, etiqueta = 'Código QR del corral', className = '' }) => {
+  const qr = useMemo(() => {
+    try {
+      return { ...encodeQrMatrix(valor || 'PORCI:CORRAL'), error: null };
+    } catch (error) {
+      return { size: 21, modules: [], error };
+    }
+  }, [valor]);
+
+  const totalSize = qr.size + ZONA_SILENCIO_QR * 2;
+  const pathData = useMemo(() => {
+    let d = '';
+    for (let r = 0; r < qr.modules.length; r++) {
+      const row = qr.modules[r];
+      for (let c = 0; c < row.length; c++) {
+        if (row[c]) {
+          d += `M${c + ZONA_SILENCIO_QR},${r + ZONA_SILENCIO_QR}h1v1h-1z`;
+        }
+      }
+    }
+    return d;
+  }, [qr]);
+
+  // Un payload demasiado largo no puede codificarse: avisarlo es mejor que
+  // imprimir un cuadro blanco que nadie podrá escanear en el galpón.
+  if (qr.error) {
+    return (
+      <div
+        style={{ width: size, height: size }}
+        className={`flex items-center justify-center bg-rose-50 border border-dashed border-rose-300 rounded-xl p-2 text-center ${className}`}
+      >
+        <span className="text-[10px] font-bold text-rose-700 leading-tight">
+          No se pudo generar el QR (código demasiado largo)
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <svg
+      viewBox={`0 0 ${totalSize} ${totalSize}`}
+      width={size}
+      height={size}
+      shapeRendering="crispEdges"
+      className={className}
+      role="img"
+      aria-label={etiqueta}
+    >
+      <rect width={totalSize} height={totalSize} fill="#ffffff" />
+      <path d={pathData} fill="#0f172a" />
+    </svg>
+  );
+};
 
 // Tabla de existencias compartida por las tres bodegas: alimento, farmacia e insumos.
 // `filas` viene ya normalizada para que cada bodega decida qué es "stock" y qué es "tipo".
@@ -625,22 +635,23 @@ function Porcicontrol({ user, db, appId }) {
   const listComprasInsumos = safeArr(comprasInsumos);
   const listUsosInsumos = safeArr(usosInsumos);
 
-  const runFarmUpdates = async (updates) => {
-    const entries = Object.entries(updates);
-    await runTransaction(db, async (transaction) => {
-      const snapshots = await Promise.all(entries.map(([key]) => {
-        const ref = doc(db, 'artifacts', appId, 'public', 'data', 'granja_compartida', key);
-        return transaction.get(ref).then(snapshot => ({ key, ref, snapshot }));
-      }));
+  const offlineStatus = useOfflineSyncStatus({ db, user, appId });
 
-      snapshots.forEach(({ key, ref, snapshot }) => {
-        const current = snapshot.exists() ? snapshot.data().data : [];
-        transaction.set(ref, {
-          data: updates[key](current),
-          updatedAt: Date.now(),
-          updatedBy: user.uid
-        });
-      });
+  const runFarmUpdates = async (updates) => {
+    await ejecutarTransaccionMultiClaveOffline({
+      db,
+      appId,
+      userUid: user.uid,
+      updates,
+      estadosActuales: {
+        agro_lotes: listLotes,
+        agro_pesos: listPesos,
+        agro_alimentos: listAlimentos,
+        agro_vacunas: listVacunas,
+        agro_bajas: listBajas,
+        agro_gastosextra: listGastosExtra,
+        agro_tareassanidad: listTareasSanidad
+      }
     });
   };
 
@@ -659,13 +670,17 @@ function Porcicontrol({ user, db, appId }) {
     const d = new Date();
     return { year: d.getFullYear(), month: d.getMonth() };
   });
-  const [calendarioDiaSeleccionado, setCalendarioDiaSeleccionado] = useState(() => new Date().toISOString().split('T')[0]);
+  const [calendarioDiaSeleccionado, setCalendarioDiaSeleccionado] = useState(() => todayIso());
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
 
-  // --- ESTADOS VENTA Y FINANZAS ---
+  // --- ESTADOS VENTA Y FINANZAS (MODO GALPÓN) ---
   const [ventaPesos, setVentaPesos] = useState([]);
   const [ventaPrecio, setVentaPrecio] = useState(0);
   const [pesoInputVenta, setPesoInputVenta] = useState('');
+  const [alertaPesoSospechoso, setAlertaPesoSospechoso] = useState(null);
+  const [borradorVentaRestaurado, setBorradorVentaRestaurado] = useState(false);
+  const ventaInputRef = React.useRef(null);
   // Venta cuyo formulario de anulación está abierto en el historial del corral.
   const [ventaAnulandoId, setVentaAnulandoId] = useState(null);
   const [motivoAnulacionVenta, setMotivoAnulacionVenta] = useState('');
@@ -684,6 +699,42 @@ function Porcicontrol({ user, db, appId }) {
   const [tipoRegistroAlimento, setTipoRegistroAlimento] = useState('tolva');
   const [suplementoItems, setSuplementoItems] = useState([{ id: Date.now(), tipo: '', libras: '' }]);
 
+  // --- ESTADOS DESCUENTO RÁPIDO DE TOLVA POR CÓDIGO QR (OPCIÓN 1) ---
+  const [qrModalAbierto, setQrModalAbierto] = useState(false);
+  const [qrModalModo, setQrModalModo] = useState('escanear');
+  const [qrCorralDetectado, setQrCorralDetectado] = useState(null);
+  const [qrTipoAlimento, setQrTipoAlimento] = useState('');
+  const [qrFaseDestino, setQrFaseDestino] = useState(1);
+  const [qrCantidad, setQrCantidad] = useState('1');
+  const [qrUnidad, setQrUnidad] = useState('sacos');
+  const [qrFecha, setQrFecha] = useState(() => todayIso());
+  const [qrCodigoManual, setQrCodigoManual] = useState('');
+  const [qrErrorMensaje, setQrErrorMensaje] = useState('');
+  const [qrExitoReciente, setQrExitoReciente] = useState(null);
+  const [qrUltimoDescuentoRonda, setQrUltimoDescuentoRonda] = useState(null);
+  // 'inactiva' | 'iniciando' | 'activa' | 'error': un booleano no distinguía
+  // "arrancando la cámara" de "la cámara falló", y el operario veía el mismo texto.
+  const [qrCamaraEstado, setQrCamaraEstado] = useState('inactiva');
+  const [qrCamaraError, setQrCamaraError] = useState('');
+  const [qrCamaraReintentable, setQrCamaraReintentable] = useState(false);
+  const [qrIntentoCamara, setQrIntentoCamara] = useState(0);
+  const [qrMotorLector, setQrMotorLector] = useState('');
+  const [qrLinternaDisponible, setQrLinternaDisponible] = useState(false);
+  const [qrLinternaActiva, setQrLinternaActiva] = useState(false);
+  const [qrLeyendoFoto, setQrLeyendoFoto] = useState(false);
+  const [qrGuardando, setQrGuardando] = useState(false);
+  const qrVideoRef = React.useRef(null);
+  const qrStreamRef = React.useRef(null);
+  const qrPistaVideoRef = React.useRef(null);
+  const qrLienzoRef = React.useRef(null);
+  const qrUrlProcesadoRef = React.useRef(false);
+  const qrGuardandoRef = React.useRef(false);
+  // El efecto de la cámara no puede depender de `procesarTextoQrEscaneado`: esa
+  // callback cambia de identidad con cada snapshot de Firestore (un compañero
+  // guardando un peso) y reiniciaría la cámara en plena lectura.
+  const qrProcesarRef = React.useRef(null);
+  const qrControlRepetidoRef = React.useRef(crearControlEscaneoRepetido());
+
   // --- ESTADOS LABORATORIO DE MEZCLAS ---
   const [labTotalLbs, setLabTotalLbs] = useState(100);
   const [labPorcMezcla, setLabPorcMezcla] = useState(30);
@@ -698,14 +749,17 @@ function Porcicontrol({ user, db, appId }) {
   const [formReglaAditivo, setFormReglaAditivo] = useState('MELAZA');
   const [formReglaFactor, setFormReglaFactor] = useState(0.012);
 
-  // --- ESTADOS SISTEMA DUAL DE PESAJE ---
+  // --- ESTADOS SISTEMA DUAL DE PESAJE Y MUESTREO MULTI-CERDO ---
   const [expandirSchaeffer, setExpandirSchaeffer] = useState(false);
   const [circunferenciaCm, setCircunferenciaCm] = useState('');
   const [longitudCm, setLongitudCm] = useState('');
   const [pesoSchaefferCalculado, setPesoSchaefferCalculado] = useState(null);
   const [guardandoPeso, setGuardandoPeso] = useState(false);
   const [pesoIngresado, setPesoIngresado] = useState('');
-  const [fechaPesaje, setFechaPesaje] = useState(new Date().toISOString().split('T')[0]);
+  const [fechaPesaje, setFechaPesaje] = useState(() => todayIso());
+  const [muestraPesosCorral, setMuestraPesosCorral] = useState([]);
+  const pesoDirectoInputRef = React.useRef(null);
+  const schaefferCircInputRef = React.useRef(null);
 
   // --- ESTADOS CHATBOT IA ---
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -806,15 +860,42 @@ function Porcicontrol({ user, db, appId }) {
     if (changed) setNotificacionesPush(cleaned);
   }, [notificacionesPush, isAppReady, setNotificacionesPush]);
 
+  // Captura del evento de instalación PWA para Android / Chrome
+  useEffect(() => {
+    const onBeforeInstall = (e) => {
+      e.preventDefault();
+      setDeferredInstallPrompt(e);
+    };
+    const onInstalled = () => setDeferredInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  const handleInstalarPwa = async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    try {
+      await deferredInstallPrompt.userChoice;
+    } catch {
+      // Ignorar cancelación
+    }
+    setDeferredInstallPrompt(null);
+  };
+
+  // Al cambiar de corral, limpiar la muestra temporal de pesaje para no mezclar cerdos de otro corral
+  useEffect(() => {
+    setMuestraPesosCorral([]);
+    setAlertaPesoSospechoso(null);
+  }, [corralSeleccionado?.id]);
+
   // Cálculo en tiempo real: Fórmula de Schaeffer
   useEffect(() => {
     if (circunferenciaCm && longitudCm) {
-      const G = parseFloat(circunferenciaCm) * 0.393701;
-      const L = parseFloat(longitudCm) * 0.393701;
-      const constante = parseFloat(constanteSchaeffer) || 400;
-      const peso = (Math.pow(G, 2) * L) / constante;
-      const pesoRedondeado = parseFloat(peso.toFixed(2));
-      setPesoSchaefferCalculado(isNaN(pesoRedondeado) || pesoRedondeado <= 0 ? null : pesoRedondeado);
+      setPesoSchaefferCalculado(calcularPesoSchaefferLb(circunferenciaCm, longitudCm, constanteSchaeffer));
     } else {
       setPesoSchaefferCalculado(null);
     }
@@ -1187,8 +1268,18 @@ ${JSON.stringify(contextoGranja)}`;
     }
   };
 
-  // Función async para guardar peso(puedes ver la estructura en la imagen)
-  const guardarPesoEnNube = async (pesoLb, fecha, metodo) => {
+  const vibrarCampo = (patron = 45) => {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try {
+        navigator.vibrate(patron);
+      } catch {
+        // Algunos navegadores bloquean vibración sin gesto directo
+      }
+    }
+  };
+
+  // Función async para guardar peso (soporta peso individual o promedio de muestra multi-cerdo)
+  const guardarPesoEnNube = async (pesoLb, fecha, metodo, extras = {}) => {
     try {
       setGuardandoPeso(true);
       const lote = getLoteActivo(corralSeleccionado?.id);
@@ -1200,26 +1291,39 @@ ${JSON.stringify(contextoGranja)}`;
       }
 
       const nuevoPeso = {
-        id: `p_${Date.now()}`,
+        id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         loteId: lote.id,
         fecha: fecha,
         pesoPromedio: parseFloat(pesoLb),
-        metodo: metodo
+        metodo: metodo,
+        ...(extras.cantidadMuestra ? { cantidadMuestra: extras.cantidadMuestra } : {}),
+        ...(Array.isArray(extras.muestraPesos) && extras.muestraPesos.length > 0
+          ? {
+              muestraPesos: extras.muestraPesos.map((m, idx) => ({
+                numero: idx + 1,
+                pesoLb: Number(m.pesoLb),
+                metodo: m.metodo || metodo,
+                ...(m.circunferenciaCm ? { circunferenciaCm: Number(m.circunferenciaCm) } : {}),
+                ...(m.longitudCm ? { longitudCm: Number(m.longitudCm) } : {})
+              }))
+            }
+          : {})
       };
 
-      await new Promise(resolve => setTimeout(resolve, 300));
       await setPesos(prev => [...safeArr(prev), nuevoPeso]);
+      vibrarCampo(60);
+      const sufijoMuestra = extras.cantidadMuestra > 1 ? ` · muestra de ${extras.cantidadMuestra} cerdos` : '';
       emitirNotificacionPush({
         tipo: 'peso',
         titulo: 'Peso registrado',
-        descripcion: `${parseFloat(pesoLb).toFixed(2)} lb promedio · ${metodo}`,
+        descripcion: `${parseFloat(pesoLb).toFixed(2)} lb promedio · ${metodo}${sufijoMuestra}`,
         corralId: corralSeleccionado?.id || lote.corralId || '',
         corralNombre: corralSeleccionado?.nombre || listCorrales.find(c => c.id === lote.corralId)?.nombre || 'Corral',
         loteId: lote.id,
         loteNombre: lote.nombre || lote.raza || 'Lote activo',
         entidad: { tipo: 'peso', id: nuevoPeso.id }
       });
-      mostrarAlerta('Éxito', `Peso registrado: ${parseFloat(pesoLb).toFixed(2)} lb (${metodo})`, 'success');
+      mostrarAlerta('Éxito', `Peso registrado: ${parseFloat(pesoLb).toFixed(1)} lb (${metodo}${sufijoMuestra})`, 'success');
       setGuardandoPeso(false);
       return true;
     } catch (error) {
@@ -1227,6 +1331,56 @@ ${JSON.stringify(contextoGranja)}`;
       mostrarAlerta('Error', 'No se pudo guardar el peso');
       setGuardandoPeso(false);
       return false;
+    }
+  };
+
+  const handleAgregarPesoDirectoAMuestra = () => {
+    const peso = parseFloat(pesoIngresado);
+    if (!peso || peso <= 0) {
+      mostrarAlerta('Error', 'Ingresa un peso válido mayor a 0 lb para sumarlo a la muestra.');
+      return;
+    }
+    setMuestraPesosCorral(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), pesoLb: Number(peso.toFixed(1)), metodo: 'directo' }
+    ]);
+    vibrarCampo(40);
+    setPesoIngresado('');
+    pesoDirectoInputRef.current?.focus();
+  };
+
+  const handleAgregarSchaefferAMuestra = () => {
+    if (!pesoSchaefferCalculado) {
+      mostrarAlerta('Error', 'Completa Circunferencia y Longitud para sumar el cerdo a la muestra.');
+      return;
+    }
+    setMuestraPesosCorral(prev => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        pesoLb: Number(pesoSchaefferCalculado.toFixed(1)),
+        metodo: 'schaeffer',
+        circunferenciaCm: Number(circunferenciaCm),
+        longitudCm: Number(longitudCm)
+      }
+    ]);
+    vibrarCampo(40);
+    setCircunferenciaCm('');
+    setLongitudCm('');
+    setPesoSchaefferCalculado(null);
+    schaefferCircInputRef.current?.focus();
+  };
+
+  const handleGuardarPromedioMuestra = async () => {
+    const resumen = resumirMuestraPesaje(muestraPesosCorral);
+    if (resumen.cantidad === 0) return;
+    const exito = await guardarPesoEnNube(resumen.promedioLb, fechaPesaje, resumen.metodoRegistro, {
+      cantidadMuestra: resumen.cantidad,
+      muestraPesos: muestraPesosCorral
+    });
+    if (exito) {
+      setMuestraPesosCorral([]);
+      setFechaPesaje(todayIso());
     }
   };
 
@@ -1242,7 +1396,7 @@ ${JSON.stringify(contextoGranja)}`;
     const exito = await guardarPesoEnNube(peso, fechaPesaje, 'directo');
     if (exito) {
       setPesoIngresado('');
-      setFechaPesaje(new Date().toISOString().split('T')[0]);
+      setFechaPesaje(todayIso());
     }
   };
 
@@ -1258,7 +1412,7 @@ ${JSON.stringify(contextoGranja)}`;
       setLongitudCm('');
       setPesoSchaefferCalculado(null);
       setExpandirSchaeffer(false);
-      setFechaPesaje(new Date().toISOString().split('T')[0]);
+      setFechaPesaje(todayIso());
     }
   };
 
@@ -1405,7 +1559,7 @@ ${JSON.stringify(contextoGranja)}`;
       const costoUsado = salidas.reduce((sum, u) => sum + (Number(u.costo) || 0), 0);
       const stock = Math.max(0, cantidadComprada - cantidadUsada);
       const costoPromedio = cantidadComprada > 0 ? costoComprado / cantidadComprada : 0;
-      const hoy = new Date(`${new Date().toISOString().split('T')[0]}T00:00:00`);
+      const hoy = new Date(`${todayIso()}T00:00:00`);
       const vencimientos = entradas
         .filter(c => c.vencimiento && stock > 0)
         .map(c => {
@@ -1926,7 +2080,7 @@ ${JSON.stringify(contextoGranja)}`;
       return {
         ...t,
         ...updates,
-        completadoEn: nextEstado === 'hecho' ? (updates.completadoEn || t.completadoEn || new Date().toISOString().split('T')[0]) : null
+        completadoEn: nextEstado === 'hecho' ? (updates.completadoEn || t.completadoEn || todayIso()) : null
       };
     }));
   };
@@ -2366,7 +2520,7 @@ ${JSON.stringify(contextoGranja)}`;
     const irA = (corral, tab) => () => {
       setCorralSeleccionado(corral);
       setTabActiva(tab);
-      setVista('corral');
+      setVista('corralDetail');
       setIsSidebarOpen(false);
     };
 
@@ -2593,7 +2747,7 @@ ${JSON.stringify(contextoGranja)}`;
   const getFasesDinamicas = (lote) => {
     if (!lote) return [];
     let fasesResult = [];
-    let currentDate = new Date((lote.fechaIngreso || new Date().toISOString().split('T')[0]) + 'T00:00:00');
+    let currentDate = new Date((lote.fechaIngreso || todayIso()) + 'T00:00:00');
     const hFases = safeArr(lote.historialFases);
     const faseActualLote = lote.faseActual || 1;
 
@@ -2707,48 +2861,52 @@ ${JSON.stringify(contextoGranja)}`;
   };
 
   // --- MOTOR DE ALIMENTACIÓN Y SUPLEMENTOS ---
-  const handleGuardarTolva = (e) => {
+  const handleGuardarTolva = async (e) => {
     e.preventDefault();
     const loteActivo = getLoteActivo(corralSeleccionado.id);
     if (!loteActivo) return;
 
     const fd = new FormData(e.target);
     const faseDestinoSeleccionada = parseInt(fd.get('faseDestino'), 10);
-    const info = listCatAlimentos.find(a => a.nombre === puroInput.tipo);
-    const cantidad = parseFloat(puroInput.cantidad) || 0;
 
-    if (cantidad <= 0 || !info) return mostrarAlerta("Error", "Revisa la cantidad y tipo de alimento.");
+    // El cálculo vive en el dominio y es el mismo que usa el lector QR: antes
+    // había dos copias con criterios de stock distintos (una con tolerancia de
+    // redondeo y otra sin ella), así que surtir exactamente lo disponible fallaba
+    // por un flujo y pasaba por el otro.
+    const calculo = calcularDescuentoTolva({
+      tipoAlimento: puroInput.tipo,
+      cantidad: puroInput.cantidad,
+      unidad: puroInput.unidad,
+      faseDestino: faseDestinoSeleccionada,
+      fecha: fd.get('fecha'),
+      loteActivo,
+      catalogoAlimento: listCatAlimentos,
+      inventarioCentral,
+      origenRegistro: 'manual'
+    });
 
-    let librasSuministradas = 0;
-    let costoTotal = 0;
-
-    if (puroInput.unidad === 'sacos') {
-      librasSuministradas = cantidad * (info.librasPorSaco || 50);
-      costoTotal = cantidad * info.precioSaco;
-    } else {
-      librasSuministradas = cantidad;
-      costoTotal = cantidad * (info.precioSaco / (info.librasPorSaco || 50));
-    }
-
-    const itemEnCentral = inventarioCentral.find(i => i.nombre === puroInput.tipo);
-    if (!itemEnCentral || itemEnCentral.stockLbs < librasSuministradas) {
-      const faltanLbs = librasSuministradas - (itemEnCentral?.stockLbs || 0);
-      return mostrarAlerta("Stock Insuficiente", `No tienes suficiente ${puroInput.tipo} en la Bodega Central. Te faltan ${faltanLbs.toFixed(1)} lbs para surtir esta tolva.`);
+    if (!calculo.ok) {
+      return mostrarAlerta(
+        calculo.codigoError === 'STOCK_INSUFICIENTE' ? 'Stock Insuficiente' : 'Error',
+        calculo.error
+      );
     }
 
     const alimentoId = crypto.randomUUID();
-    setAlimentos(prev => [...safeArr(prev), {
-      id: alimentoId, loteId: loteActivo.id, fecha: fd.get('fecha'),
-      tipo: puroInput.tipo, cantidadLb: librasSuministradas,
-      costo: costoTotal,
-      esSuplemento: false, ahorro: 0, costoPorLb: (info.precioSaco / (info.librasPorSaco || 50)),
-      faseRegistro: faseDestinoSeleccionada
-    }]);
+    try {
+      await setAlimentos(prev => [...safeArr(prev), {
+        id: alimentoId,
+        ...calculo.registro
+      }]);
+    } catch {
+      return mostrarAlerta('Error', 'No se pudo guardar el registro en la nube. Revisa tu conexión y vuelve a intentarlo: la bodega no fue modificada.');
+    }
+
     setPuroInput({ ...puroInput, cantidad: '' });
     emitirNotificacionPush({
       tipo: 'alimento',
       titulo: 'Alimento registrado',
-      descripcion: `${puroInput.tipo} · ${librasSuministradas.toFixed(1)} lb · ${formatearMoneda(costoTotal)}`,
+      descripcion: `${puroInput.tipo} · ${calculo.librasSuministradas.toFixed(1)} lb · ${formatearMoneda(calculo.costoTotal)}`,
       detalle: `Fase ${faseDestinoSeleccionada}`,
       corralId: corralSeleccionado?.id || loteActivo.corralId || '',
       corralNombre: corralSeleccionado?.nombre || listCorrales.find(c => c.id === loteActivo.corralId)?.nombre || 'Corral',
@@ -2757,6 +2915,569 @@ ${JSON.stringify(contextoGranja)}`;
       entidad: { tipo: 'alimento', id: alimentoId }
     });
     mostrarAlerta("Tolva Llenada", "El concentrado ha sido descontado de la bodega central y el presupuesto avanzó.");
+  };
+
+  // --- MOTOR QR TOLVA (OPCIÓN 1: QR PEGADO EN CADA CORRAL) ---
+  const detenerCamaraQr = React.useCallback(() => {
+    if (qrStreamRef.current) {
+      qrStreamRef.current.getTracks().forEach(track => track.stop());
+      qrStreamRef.current = null;
+    }
+    qrPistaVideoRef.current = null;
+    if (qrVideoRef.current) {
+      qrVideoRef.current.srcObject = null;
+    }
+    qrControlRepetidoRef.current.reiniciar();
+    setQrCamaraEstado('inactiva');
+    setQrLinternaDisponible(false);
+    setQrLinternaActiva(false);
+    setQrMotorLector('');
+  }, []);
+
+  // La linterna del teléfono es la diferencia entre leer y no leer un rótulo
+  // dentro de un galpón al atardecer. Solo Chrome/Android expone `torch`.
+  const alternarLinternaQr = React.useCallback(async () => {
+    const pista = qrPistaVideoRef.current;
+    if (!pista) return;
+    const encender = !qrLinternaActiva;
+    try {
+      await pista.applyConstraints({ advanced: [{ torch: encender }] });
+      setQrLinternaActiva(encender);
+    } catch {
+      setQrLinternaDisponible(false);
+      setQrLinternaActiva(false);
+    }
+  }, [qrLinternaActiva]);
+
+  const prepararCorralEnModalQr = React.useCallback((corral) => {
+    if (!corral) return;
+    detenerCamaraQr();
+    const loteActivo = listLotes.find(l => l.corralId === corral.id && l.estado === 'Activo') || null;
+    const stats = loteActivo ? calculateLotStatistics({
+      lot: loteActivo,
+      deaths: listBajas,
+      feedings: listAlimentos,
+      sales: listVentasActivas,
+      weights: listPesos,
+      vaccines: listVacunas,
+      extraExpenses: listGastosExtra,
+      catalog: listCatAlimentos,
+      mixAlertWeight: pesoAlertaMezcla
+    }) : null;
+    const ctx = resolverContextoTolvaQr({
+      corral,
+      loteActivo,
+      stats,
+      cronograma: CRONOGRAMA_ALIMENTACION,
+      catalogoAlimento: listCatAlimentos,
+      inventarioCentral
+    });
+
+    setQrCorralDetectado(corral);
+    setQrErrorMensaje('');
+    setQrExitoReciente(null);
+    setQrCodigoManual('');
+
+    // Siempre se reinicia el formulario: si no, al escanear un corral vacío
+    // quedaban a la vista el concentrado y la cantidad del corral anterior.
+    setQrCantidad('1');
+    setQrUnidad('sacos');
+    setQrFecha(todayIso());
+    setQrFaseDestino(ctx.tieneLoteActivo ? ctx.faseActual : 1);
+    setQrTipoAlimento(ctx.tieneLoteActivo ? ctx.alimentoSugerido : '');
+  }, [detenerCamaraQr, listLotes, listBajas, listAlimentos, listVentasActivas, listPesos, listVacunas, listGastosExtra, listCatAlimentos, pesoAlertaMezcla, inventarioCentral]);
+
+  const abrirModalQrTolva = (corralPreseleccionado = null, modo = 'escanear') => {
+    setQrErrorMensaje('');
+    setQrCamaraError('');
+    setQrCamaraReintentable(false);
+    setQrExitoReciente(null);
+    setQrUltimoDescuentoRonda(null);
+    setQrCodigoManual('');
+    setQrModalModo(modo);
+    setQrModalAbierto(true);
+    if (corralPreseleccionado && corralPreseleccionado.id) {
+      prepararCorralEnModalQr(corralPreseleccionado);
+    } else {
+      setQrCorralDetectado(null);
+    }
+  };
+
+  const cerrarModalQrTolva = React.useCallback(() => {
+    detenerCamaraQr();
+    setQrModalAbierto(false);
+    setQrCorralDetectado(null);
+    setQrErrorMensaje('');
+    setQrCamaraError('');
+    setQrExitoReciente(null);
+    setQrUltimoDescuentoRonda(null);
+  }, [detenerCamaraQr]);
+
+  const irACorralDesdeQr = (corral, tab = 'resumen') => {
+    if (!corral) return;
+    cerrarModalQrTolva();
+    setCorralSeleccionado(corral);
+    setTabActiva(tab);
+    setVista('corralDetail');
+  };
+
+  // --- NAVEGACIÓN MÓVIL CON BOTÓN FÍSICO "ATRÁS" (HISTORY API) ---
+  const restaurandoHistorialRef = React.useRef(false);
+  const ultimoEstadoNavRef = React.useRef(null);
+  const listCorralesRef = React.useRef(listCorrales);
+  useEffect(() => {
+    listCorralesRef.current = listCorrales;
+  }, [listCorrales]);
+
+  useEffect(() => {
+    if (!isAppReady) return;
+    const actual = construirEstadoNavegacion({
+      vista,
+      corralId: corralSeleccionado?.id || null,
+      tabActiva,
+      qrModalAbierto,
+      isChatOpen
+    });
+
+    if (!ultimoEstadoNavRef.current) {
+      ultimoEstadoNavRef.current = actual;
+      window.history.replaceState(actual, '');
+      return;
+    }
+
+    if (restaurandoHistorialRef.current) {
+      restaurandoHistorialRef.current = false;
+      ultimoEstadoNavRef.current = actual;
+      return;
+    }
+
+    if (!sonEstadosNavegacionIguales(ultimoEstadoNavRef.current, actual)) {
+      ultimoEstadoNavRef.current = actual;
+      window.history.pushState(actual, '');
+    }
+  }, [isAppReady, vista, corralSeleccionado?.id, tabActiva, qrModalAbierto, isChatOpen]);
+
+  useEffect(() => {
+    const manejarBotonAtras = (evento) => {
+      const estado = evento.state;
+      if (!estado || !estado.porciNav) return;
+
+      restaurandoHistorialRef.current = true;
+      setIsSidebarOpen(false);
+      setModalConfirm(prev => (prev.visible ? { ...prev, visible: false } : prev));
+
+      if (!estado.qrModalAbierto) {
+        detenerCamaraQr();
+        setQrModalAbierto(false);
+        setQrCorralDetectado(null);
+        setQrExitoReciente(null);
+        setQrUltimoDescuentoRonda(null);
+      } else {
+        setQrModalAbierto(true);
+      }
+
+      setIsChatOpen(Boolean(estado.isChatOpen));
+      setVista(estado.vista || 'hoy');
+      setTabActiva(estado.tabActiva || 'resumen');
+
+      if (estado.corralId) {
+        const encontrado = listCorralesRef.current.find(c => c.id === estado.corralId) || null;
+        setCorralSeleccionado(encontrado);
+      } else {
+        setCorralSeleccionado(null);
+      }
+    };
+
+    window.addEventListener('popstate', manejarBotonAtras);
+    return () => window.removeEventListener('popstate', manejarBotonAtras);
+  }, [detenerCamaraQr]);
+
+  const procesarTextoQrEscaneado = React.useCallback((rawText, { vibrar = false } = {}) => {
+    const res = parseCorralQrPayload(rawText, listCorrales);
+    if (!res.ok) {
+      setQrErrorMensaje(res.error);
+      return false;
+    }
+    // Confirmación táctil: en el galpón el operario no mira la pantalla mientras
+    // encuadra el rótulo, así sabe que ya leyó sin tener que acercarse el teléfono.
+    if (vibrar && typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(60);
+    }
+    setQrUltimoDescuentoRonda(null);
+    prepararCorralEnModalQr(res.corral);
+    return true;
+  }, [listCorrales, prepararCorralEnModalQr]);
+
+  // Puente estable hacia la última versión de la callback, para que el efecto de
+  // la cámara no se vuelva a montar cuando cambia el estado compartido.
+  useEffect(() => {
+    qrProcesarRef.current = procesarTextoQrEscaneado;
+  }, [procesarTextoQrEscaneado]);
+
+  // Si el operario escanea el QR físico con la cámara nativa del celular (?qrCorral=<id>)
+  // o usa el atajo de pantalla de inicio PWA (?accion=escanearQr o ?vista=hoy),
+  // abrimos directo el flujo correspondiente.
+  useEffect(() => {
+    if (!isAppReady || qrUrlProcesadoRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const paramCorral = params.get('qrCorral') || params.get('corralId');
+    const paramAccion = params.get('accion');
+    const paramVista = params.get('vista');
+
+    if (!paramCorral && !paramAccion && !paramVista) return;
+    qrUrlProcesadoRef.current = true;
+
+    if (paramAccion === 'escanearQr') {
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('accion');
+      window.history.replaceState(window.history.state, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+      setQrModalModo('escanear');
+      setQrModalAbierto(true);
+      setQrCorralDetectado(null);
+      return;
+    }
+
+    if (paramVista && ['hoy', 'dashboard', 'bodega', 'calendario', 'finanzasGlobales', 'historial', 'config'].includes(paramVista)) {
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('vista');
+      window.history.replaceState(window.history.state, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+      setVista(paramVista);
+      return;
+    }
+
+    if (!paramCorral) return;
+    const res = parseCorralQrPayload(paramCorral, listCorrales);
+
+    // El parámetro se limpia solo si resolvió: si el rótulo trae un corral que ya
+    // no existe, recargar la página vuelve a intentarlo en lugar de perder el dato.
+    if (res.ok) {
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete('qrCorral');
+      cleanUrl.searchParams.delete('corralId');
+      window.history.replaceState(window.history.state, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+    }
+
+    setQrModalModo('escanear');
+    setQrModalAbierto(true);
+    if (res.ok) {
+      prepararCorralEnModalQr(res.corral);
+    } else {
+      setQrErrorMensaje(res.error);
+    }
+  }, [isAppReady, listCorrales, prepararCorralEnModalQr]);
+
+  // Dibuja el cuadro actual del video (o una imagen) reducido en un lienzo y
+  // devuelve sus píxeles. Es la entrada que necesita el decodificador empaquetado.
+  const extraerPixelesQr = React.useCallback((fuente, anchoFuente, altoFuente) => {
+    const medida = calcularTamanoCaptura({ ancho: anchoFuente, alto: altoFuente });
+    if (!medida) return null;
+
+    if (!qrLienzoRef.current) {
+      qrLienzoRef.current = document.createElement('canvas');
+    }
+    const lienzo = qrLienzoRef.current;
+    lienzo.width = medida.ancho;
+    lienzo.height = medida.alto;
+
+    const ctx = lienzo.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(fuente, 0, 0, medida.ancho, medida.alto);
+    return ctx.getImageData(0, 0, medida.ancho, medida.alto);
+  }, []);
+
+  // Safari (todo iOS) y Firefox no tienen `BarcodeDetector`. Antes la cámara se
+  // abría y nunca decodificaba nada: vista en vivo, mira de escaneo animada y
+  // cero lecturas, sin un solo mensaje. Aquí se carga jsQR a demanda como
+  // respaldo, así que el lector funciona en cualquier navegador moderno.
+  const cargarDecodificadorRespaldo = React.useCallback(async () => {
+    const modulo = await import('jsqr');
+    return modulo.default || modulo;
+  }, []);
+
+  // Ciclo de vida de la cámara trasera cuando el modal está en vista de escaneo
+  useEffect(() => {
+    const debeActivarCamara = qrModalAbierto && qrModalModo === 'escanear' && !qrCorralDetectado && !qrExitoReciente;
+    if (!debeActivarCamara) {
+      detenerCamaraQr();
+      return undefined;
+    }
+
+    let cancelado = false;
+    let siguienteCuadro = null;
+
+    const reportarFallo = (error) => {
+      const diagnostico = describirErrorCamara({
+        error,
+        soportaMediaDevices: Boolean(navigator.mediaDevices?.getUserMedia),
+        contextoSeguro: window.isSecureContext !== false
+      });
+      setQrCamaraEstado('error');
+      setQrCamaraError(diagnostico.mensaje);
+      setQrCamaraReintentable(diagnostico.reintentable);
+      return diagnostico;
+    };
+
+    const iniciar = async () => {
+      setQrCamaraEstado('iniciando');
+      setQrCamaraError('');
+      setQrCamaraReintentable(false);
+      qrControlRepetidoRef.current.reiniciar();
+
+      if (!navigator.mediaDevices?.getUserMedia || window.isSecureContext === false) {
+        reportarFallo(null);
+        return;
+      }
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+      } catch (error) {
+        if (!cancelado) reportarFallo(error);
+        return;
+      }
+
+      if (cancelado) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      qrStreamRef.current = stream;
+      const pista = stream.getVideoTracks()[0] || null;
+      qrPistaVideoRef.current = pista;
+      setQrLinternaDisponible(Boolean(pista?.getCapabilities?.().torch));
+
+      // Si el <video> todavía no está montado, el stream quedaría huérfano y la
+      // mira se dibujaría sobre un rectángulo negro.
+      if (!qrVideoRef.current) {
+        detenerCamaraQr();
+        setQrCamaraEstado('error');
+        setQrCamaraError('No se pudo mostrar la vista de la cámara. Vuelve a abrir el escáner.');
+        setQrCamaraReintentable(true);
+        return;
+      }
+
+      qrVideoRef.current.srcObject = stream;
+      try {
+        await qrVideoRef.current.play();
+      } catch {
+        // iOS puede rechazar la reproducción automática; el cuadro igual avanza
+        // con `playsInline muted`, así que seguimos intentando decodificar.
+      }
+      if (cancelado) return;
+
+      let detectarEnCuadro;
+      if (soportaDeteccionNativaQr(window)) {
+        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        setQrMotorLector('nativo');
+        detectarEnCuadro = async (video) => {
+          const codigos = await detector.detect(video);
+          return codigos?.[0]?.rawValue || null;
+        };
+      } else {
+        let jsQR;
+        try {
+          jsQR = await cargarDecodificadorRespaldo();
+        } catch {
+          if (!cancelado) {
+            setQrCamaraEstado('error');
+            setQrCamaraError('No se pudo cargar el lector de códigos. Revisa tu conexión, usa la foto del QR o toca el corral en la lista.');
+            setQrCamaraReintentable(true);
+          }
+          return;
+        }
+        if (cancelado) return;
+        setQrMotorLector('jsqr');
+        detectarEnCuadro = async (video) => {
+          const pixeles = extraerPixelesQr(video, video.videoWidth, video.videoHeight);
+          if (!pixeles) return null;
+          return jsQR(pixeles.data, pixeles.width, pixeles.height, { inversionAttempts: 'attemptBoth' })?.data || null;
+        };
+      }
+
+      setQrCamaraEstado('activa');
+
+      // Bucle que se reagenda a sí mismo en lugar de un setInterval: con un
+      // intervalo fijo las decodificaciones lentas de un teléfono de gama baja se
+      // acumulaban unas sobre otras. Además se pausa si la pestaña queda oculta.
+      const analizar = async () => {
+        if (cancelado) return;
+        const video = qrVideoRef.current;
+        if (video && !document.hidden && video.readyState >= 2 && video.videoWidth > 0) {
+          try {
+            const texto = await detectarEnCuadro(video);
+            if (cancelado) return;
+            // El antirrebote evita reprocesar el mismo rótulo mientras sigue
+            // encuadrado, que repintaba el error cuatro veces por segundo.
+            if (texto && qrControlRepetidoRef.current.debeProcesar(texto)) {
+              qrProcesarRef.current?.(texto, { vibrar: true });
+              return;
+            }
+          } catch {
+            // Cuadro intermedio ilegible: seguimos con el siguiente.
+          }
+        }
+        siguienteCuadro = window.setTimeout(analizar, 200);
+      };
+
+      analizar();
+    };
+
+    iniciar();
+
+    return () => {
+      cancelado = true;
+      if (siguienteCuadro) window.clearTimeout(siguienteCuadro);
+      detenerCamaraQr();
+    };
+    // `qrProcesarRef` mantiene fuera de aquí las dependencias volátiles de datos.
+  }, [
+    qrModalAbierto,
+    qrModalModo,
+    qrCorralDetectado,
+    qrExitoReciente,
+    qrIntentoCamara,
+    detenerCamaraQr,
+    extraerPixelesQr,
+    cargarDecodificadorRespaldo
+  ]);
+
+  // Si el operario negó el permiso o tenía la cámara ocupada, antes había que
+  // cerrar y reabrir el modal; ahora basta un botón.
+  const reintentarCamaraQr = () => {
+    detenerCamaraQr();
+    setQrCamaraError('');
+    setQrCamaraReintentable(false);
+    setQrIntentoCamara(n => n + 1);
+  };
+
+  // Escape cierra el escáner: con la cámara encendida, quedarse sin salida
+  // visible a una sola X pequeña es especialmente incómodo.
+  useEffect(() => {
+    if (!qrModalAbierto) return undefined;
+    const alPresionarTecla = (evento) => {
+      if (evento.key === 'Escape') cerrarModalQrTolva();
+    };
+    window.addEventListener('keydown', alPresionarTecla);
+    return () => window.removeEventListener('keydown', alPresionarTecla);
+  }, [qrModalAbierto, cerrarModalQrTolva]);
+
+  const handleEscanearImagenQr = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setQrErrorMensaje('');
+    setQrLeyendoFoto(true);
+    try {
+      const bitmap = await createImageBitmap(file);
+      let texto = null;
+
+      if (soportaDeteccionNativaQr(window)) {
+        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        const codigos = await detector.detect(bitmap);
+        texto = codigos?.[0]?.rawValue || null;
+      } else {
+        // Mismo respaldo que la cámara: la foto del QR también funciona en iOS.
+        const jsQR = await cargarDecodificadorRespaldo();
+        const pixeles = extraerPixelesQr(bitmap, bitmap.width, bitmap.height);
+        texto = pixeles
+          ? jsQR(pixeles.data, pixeles.width, pixeles.height, { inversionAttempts: 'attemptBoth' })?.data || null
+          : null;
+      }
+      bitmap.close?.();
+
+      if (texto) {
+        procesarTextoQrEscaneado(texto);
+      } else {
+        setQrErrorMensaje('No se detectó ningún código QR claro en la foto. Acércate más al rótulo del corral y evita el reflejo del plástico.');
+      }
+    } catch {
+      setQrErrorMensaje('No se pudo procesar la foto del QR.');
+    } finally {
+      setQrLeyendoFoto(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmarDescuentoQr = async (e, { continuarRonda = false } = {}) => {
+    if (e) e.preventDefault();
+    if (!qrCorralDetectado) return;
+
+    // Un doble toque en el móvil disparaba dos veces el mismo descuento: ambas
+    // llamadas validaban contra el mismo stock y la bodega quedaba en negativo.
+    if (qrGuardandoRef.current) return;
+
+    const loteActivo = getLoteActivo(qrCorralDetectado.id);
+    const calculo = calcularDescuentoTolva({
+      tipoAlimento: qrTipoAlimento,
+      cantidad: qrCantidad,
+      unidad: qrUnidad,
+      faseDestino: qrFaseDestino,
+      fecha: qrFecha,
+      loteActivo,
+      catalogoAlimento: listCatAlimentos,
+      inventarioCentral,
+      origenRegistro: 'qr'
+    });
+
+    if (!calculo.ok) {
+      setQrErrorMensaje(calculo.error);
+      return;
+    }
+
+    qrGuardandoRef.current = true;
+    setQrGuardando(true);
+    const alimentoId = crypto.randomUUID();
+
+    try {
+      await setAlimentos(prev => [...safeArr(prev), {
+        id: alimentoId,
+        ...calculo.registro
+      }]);
+    } catch {
+      setQrErrorMensaje('No se pudo guardar el descuento en la nube. Revisa tu conexión y vuelve a intentarlo: la bodega no fue modificada.');
+      return;
+    } finally {
+      qrGuardandoRef.current = false;
+      setQrGuardando(false);
+    }
+
+    vibrarCampo([40, 30, 60]);
+    emitirNotificacionPush({
+      tipo: 'alimento',
+      titulo: 'Tolva QR registrada',
+      descripcion: `${qrTipoAlimento} · ${calculo.librasSuministradas.toFixed(1)} lb · ${formatearMoneda(calculo.costoTotal)}`,
+      detalle: `${qrCorralDetectado.nombre} · Fase ${qrFaseDestino} (QR)`,
+      corralId: qrCorralDetectado.id,
+      corralNombre: qrCorralDetectado.nombre,
+      loteId: loteActivo.id,
+      loteNombre: loteActivo.nombre || loteActivo.raza || 'Lote activo',
+      entidad: { tipo: 'alimento', id: alimentoId }
+    });
+
+    setQrErrorMensaje('');
+    const resumenDescuento = {
+      corralId: qrCorralDetectado.id,
+      corralNombre: qrCorralDetectado.nombre,
+      loteNombre: loteActivo.nombre || loteActivo.raza || 'Lote activo',
+      tipoAlimento: qrTipoAlimento,
+      libras: calculo.librasSuministradas,
+      sacos: calculo.sacosEquivalentes,
+      costo: calculo.costoTotal,
+      stockRestanteSacos: calculo.stockRestanteSacos,
+      stockRestanteLbs: calculo.stockRestanteLbs,
+      fase: qrFaseDestino
+    };
+
+    if (continuarRonda) {
+      setQrUltimoDescuentoRonda(resumenDescuento);
+      setQrExitoReciente(null);
+      setQrCorralDetectado(null);
+      return;
+    }
+
+    setQrExitoReciente(resumenDescuento);
   };
 
   const handleGuardarSuplemento = (e) => {
@@ -2848,18 +3569,101 @@ ${JSON.stringify(contextoGranja)}`;
     mostrarAlerta("Éxito", "Compra registrada en la Bodega Central.");
   };
 
+  // --- PERSISTENCIA LOCAL DEL PESAJE DE BÁSCULA EN CURSO (ANTI-LLAMADAS / RECARGAS) ---
+  const claveBorradorVentaActual = useMemo(() => {
+    if (!corralSeleccionado?.id) return '';
+    const lote = listLotes.find(l => l.corralId === corralSeleccionado.id && l.estado === 'Activo');
+    return lote ? construirClaveBorradorBascula(appId, corralSeleccionado.id, lote.id) : '';
+  }, [appId, corralSeleccionado?.id, listLotes]);
+
+  useEffect(() => {
+    if (vista !== 'prepararVenta' || !claveBorradorVentaActual) return;
+    try {
+      if (ventaPesos.length === 0) {
+        window.localStorage.removeItem(claveBorradorVentaActual);
+      } else {
+        window.localStorage.setItem(
+          claveBorradorVentaActual,
+          serializarBorradorBascula({ pesos: ventaPesos, precioLibra: ventaPrecio })
+        );
+      }
+    } catch {
+      // Ignorar si el navegador restringe almacenamiento
+    }
+  }, [vista, claveBorradorVentaActual, ventaPesos, ventaPrecio]);
+
   const prepararVentaLote = () => {
     const loteActivo = getLoteActivo(corralSeleccionado.id);
+    let precioInicial = 0;
     if (loteActivo) {
       const planSanitario = getPlanInnosure(loteActivo);
       if (!planSanitario.puedeVender) {
         return mostrarAlerta('Venta bloqueada por Innosure', planSanitario.motivoBloqueo);
       }
-      setVentaPrecio(loteActivo.precioVentaLibra || 0);
+      precioInicial = loteActivo.precioVentaLibra || 0;
     }
-    setVentaPesos([]);
+
+    const claveDraft = loteActivo ? construirClaveBorradorBascula(appId, corralSeleccionado.id, loteActivo.id) : '';
+    const borrador = claveDraft ? parsearBorradorBascula(window.localStorage.getItem(claveDraft)) : null;
+
+    if (borrador && borrador.pesos.length > 0) {
+      setVentaPesos(borrador.pesos);
+      setVentaPrecio(borrador.precioLibra > 0 ? borrador.precioLibra : precioInicial);
+      setBorradorVentaRestaurado(true);
+    } else {
+      setVentaPesos([]);
+      setVentaPrecio(precioInicial);
+      setBorradorVentaRestaurado(false);
+    }
+
     setPesoInputVenta('');
+    setAlertaPesoSospechoso(null);
     setVista('prepararVenta');
+  };
+
+  const agregarPesoConfirmadoABascula = (pesoLb) => {
+    setVentaPesos(prev => [...prev, pesoLb]);
+    setPesoInputVenta('');
+    setAlertaPesoSospechoso(null);
+    vibrarCampo(45);
+    window.requestAnimationFrame(() => {
+      ventaInputRef.current?.focus();
+    });
+  };
+
+  const handleCapturarPesoBascula = (e) => {
+    e.preventDefault();
+    if (!pesoInputVenta) return;
+    const evaluacion = evaluarPesoBascula({
+      peso: pesoInputVenta,
+      pesosPrevios: ventaPesos
+    });
+    if (!evaluacion.ok) {
+      mostrarAlerta('Peso inválido', evaluacion.mensaje);
+      return;
+    }
+    if (evaluacion.sospechoso) {
+      vibrarCampo([70, 50, 70]);
+      setAlertaPesoSospechoso(evaluacion);
+      return;
+    }
+    agregarPesoConfirmadoABascula(evaluacion.pesoRedondeado);
+  };
+
+  const handleLimpiarBorradorBascula = () => {
+    pedirConfirmacion('Vaciar Báscula en Curso', '¿Deseas borrar todos los pesos capturados en esta sesión de báscula?', () => {
+      setVentaPesos([]);
+      setPesoInputVenta('');
+      setAlertaPesoSospechoso(null);
+      setBorradorVentaRestaurado(false);
+      if (claveBorradorVentaActual) {
+        try {
+          window.localStorage.removeItem(claveBorradorVentaActual);
+        } catch {
+          // Ignorar
+        }
+      }
+    });
   };
 
   const procesarVenta = () => {
@@ -2887,7 +3691,7 @@ ${JSON.stringify(contextoGranja)}`;
         id: crypto.randomUUID(),
         loteId: loteActivo.id,
         corralId: loteActivo.corralId,
-        fecha: new Date().toISOString().split('T')[0],
+        fecha: todayIso(),
         cantidadCerdos: ventaPesos.length,
         totalLibras: totalLbs,
         pesoPromedioLibras: totalLbs / ventaPesos.length,
@@ -2897,6 +3701,16 @@ ${JSON.stringify(contextoGranja)}`;
         tipo: 'bascula'
       };
       await setVentas(prev => [...safeArr(prev), nuevaVenta]);
+      if (claveBorradorVentaActual) {
+        try {
+          window.localStorage.removeItem(claveBorradorVentaActual);
+        } catch {
+          // Ignorar
+        }
+      }
+      setBorradorVentaRestaurado(false);
+      setAlertaPesoSospechoso(null);
+      vibrarCampo([60, 40, 90]);
       emitirNotificacionPush({
         tipo: 'venta',
         titulo: 'Venta registrada',
@@ -3018,13 +3832,13 @@ ${JSON.stringify(contextoGranja)}`;
   const confirmarVentaYCerrar = () => {
     pedirConfirmacion("Cerrar Lote Oficialmente", "¿Deseas finalizar el lote y guardarlo en el historial permanentemente?", () => {
       const loteActivo = getLoteActivo(corralSeleccionado.id);
-      setLotes(prev => safeArr(prev).map(l => l.id === loteActivo.id ? { ...l, estado: 'Cerrado', fechaSalida: new Date().toISOString().split('T')[0] } : l));
+      setLotes(prev => safeArr(prev).map(l => l.id === loteActivo.id ? { ...l, estado: 'Cerrado', fechaSalida: todayIso() } : l));
       setVista('dashboard');
     });
   };
 
   const avanzarLoteDeEtapa = (loteId, nuevaEtapaNum) => {
-    const hoy = new Date().toISOString().split('T')[0];
+    const hoy = todayIso();
     setLotes(prev => safeArr(prev).map(l => {
       if (l.id !== loteId) return l;
       const newHistorial = safeArr(l.historialFases).filter(h => h.fase < nuevaEtapaNum);
@@ -3644,7 +4458,7 @@ return (
               <form onSubmit={handleComprarBodega} className="space-y-4">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Fecha de Ingreso</label>
-                  <input type="date" name="fecha" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-slate-50/50 text-sm transition-all" />
+                  <input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-slate-50/50 text-sm transition-all" />
                 </div>
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Insumo / Producto</label>
@@ -4094,7 +4908,7 @@ return (
       if (!d) return null;
       const diaSemana = (d.getDay() + 6) % 7; // lunes = 0
       d.setDate(d.getDate() - diaSemana);
-      return d.toISOString().split('T')[0];
+      return formatLocalIsoDate(d);
     };
 
     const semanaBase = inicioSemana(addDaysToIsoDate(hoy, -14));
@@ -4179,7 +4993,7 @@ return (
               const proximos = celdas.flatMap(c => c.eventos).filter(e => e.fecha >= hoy).slice(0, 3);
               const vencidos = celdas.flatMap(c => c.eventos).filter(e => e.fecha < hoy && e.tipo === 'sanidad');
               return (
-                <button key={corral.id} onClick={() => { setCorralSeleccionado(corral); setVista('corral'); setTabActiva('sanidad'); }} className="w-full text-left p-4 active:bg-slate-50 transition-colors">
+                <button key={corral.id} onClick={() => { setCorralSeleccionado(corral); setVista('corralDetail'); setTabActiva('sanidad'); }} className="w-full text-left p-4 active:bg-slate-50 transition-colors">
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-bold text-slate-900 text-sm">{corral.nombre}</p>
                     {plan.aplica && (
@@ -4226,7 +5040,7 @@ return (
                 {filasMatriz.map(({ corral, plan, celdas }) => (
                   <tr key={corral.id} className="hover:bg-slate-50/40 transition-colors">
                     <td className="sticky left-0 z-10 bg-white px-4 py-3 border-b border-slate-100">
-                      <button onClick={() => { setCorralSeleccionado(corral); setVista('corral'); setTabActiva('sanidad'); }} className="text-left group">
+                      <button onClick={() => { setCorralSeleccionado(corral); setVista('corralDetail'); setTabActiva('sanidad'); }} className="text-left group">
                         <p className="font-bold text-slate-800 text-xs group-hover:text-emerald-600 transition-colors">{corral.nombre}</p>
                         <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
                           {plan.aplica
@@ -4877,7 +5691,17 @@ return (
 
       {/* SECCIÓN: CORRALES */}
       <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgba(0,0,0,0.015)]">
-        <h3 className="font-extrabold text-base text-slate-800 mb-4 flex items-center gap-2"><Box className="text-emerald-500" size={18} /> Gestión de Corrales</h3>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <h3 className="font-extrabold text-base text-slate-800 flex items-center gap-2"><Box className="text-emerald-500" size={18} /> Gestión de Corrales y Rótulos QR</h3>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => abrirModalQrTolva(null, 'imprimir')} className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-colors">
+              <QrCode size={15} className="text-emerald-400" /> Imprimir QRs de Corrales (PDF)
+            </button>
+            <button type="button" onClick={() => abrirModalQrTolva(null, 'escanear')} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-colors">
+              <ScanLine size={15} /> Escanear Tolva
+            </button>
+          </div>
+        </div>
         <form onSubmit={handleAgregarCorral} className="grid grid-cols-1 md:grid-cols-[1fr_200px_auto] gap-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
           <input name="nombre" placeholder="Nombre corral (Ej. Corral 1)" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-sm" />
           <input name="capacidad" type="number" placeholder="Capacidad (Cerdos)" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-sm" />
@@ -4890,7 +5714,12 @@ return (
                 <p className="font-bold text-slate-800 text-sm">{c.nombre}</p>
                 <p className="text-xs text-slate-400 mt-0.5">Capacidad: {c.capacidad} cerdos</p>
               </div>
-              <button onClick={() => handleEliminarCorral(c.id)} className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"><Trash2 size={16} /></button>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => abrirModalQrTolva(c, 'escanear')} title="Abrir descarga rápida QR de este corral" className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all">
+                  <QrCode size={16} />
+                </button>
+                <button onClick={() => handleEliminarCorral(c.id)} className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"><Trash2 size={16} /></button>
+              </div>
             </div>
           ))}
         </div>
@@ -5209,6 +6038,7 @@ return (
   );
   // --- RENDER: DETALLE DEL CORRAL ---
   const renderCorralDetail = () => {
+    if (!corralSeleccionado) return renderDashboard();
     const loteActivo = getLoteActivo(corralSeleccionado.id);
     const stats = calcularEstadisticasLote(loteActivo, simuladorMuertesExtra);
 
@@ -5262,6 +6092,9 @@ return (
               <button onClick={handleEliminarLoteActivo} className="bg-rose-50 text-rose-700 hover:bg-rose-600 hover:text-white font-bold py-2.5 px-4 rounded-xl transition-all shadow-sm flex items-center border border-rose-200/50 gap-1.5" title="Eliminar este lote completamente">
                 <Trash2 size={16} /> Anular Lote
               </button>
+              <button onClick={() => abrirModalQrTolva(corralSeleccionado, 'escanear')} className="bg-slate-900 text-white hover:bg-slate-800 font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center transition-all gap-1.5">
+                <QrCode size={16} className="text-emerald-400" /> Tolva QR
+              </button>
               <button onClick={() => setVista('imprimirFicha')} className="bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center transition-all gap-1.5">
                 <Printer size={16} /> Ficha Trazabilidad
               </button>
@@ -5286,7 +6119,7 @@ return (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha de Ingreso</label>
-                  <input type="date" name="fechaIngreso" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 text-slate-800" />
+                  <input type="date" name="fechaIngreso" required defaultValue={todayIso()} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 text-slate-800" />
                 </div>
                 <div>
                   <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad de Cerdos</label>
@@ -5618,13 +6451,18 @@ return (
                       {tipoRegistroAlimento === 'tolva' && (
                         <form onSubmit={handleGuardarTolva} className="p-6 rounded-2xl bg-white border border-slate-100 shadow-[0_4px_25px_rgb(0,0,0,0.005)] space-y-5 text-xs font-semibold">
                           <div className="border-b border-slate-100 pb-3">
-                            <h3 className="font-extrabold text-slate-800 text-base flex items-center gap-1.5"><Wheat size={20} className="text-emerald-500" /> Suministro de Concentrado Base</h3>
+                            <div className="flex items-center justify-between gap-2">
+                              <h3 className="font-extrabold text-slate-800 text-base flex items-center gap-1.5"><Wheat size={20} className="text-emerald-500" /> Suministro de Concentrado Base</h3>
+                              <button type="button" onClick={() => abrirModalQrTolva(corralSeleccionado, 'escanear')} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg text-[11px] font-black flex items-center gap-1 transition-colors shrink-0">
+                                <QrCode size={14} /> Descarga 1-Toque (QR)
+                              </button>
+                            </div>
                             <p className="text-[11px] text-slate-400 font-medium mt-1">Suministro de concentrado directo. Afecta el presupuesto alimenticio de la etapa.</p>
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha de Entrega</label>
-                              <input type="date" name="fecha" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold" />
+                              <input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 font-bold" />
                             </div>
                             <div>
                               <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Etapa Destino</label>
@@ -5642,11 +6480,34 @@ return (
                                 {listCatAlimentos.map(a => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
                               </select>
                             </div>
+                            <div>
+                              <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Sacos Rápidos (1 Toque)</label>
+                              <div className="grid grid-cols-4 gap-2">
+                                {[
+                                  { label: '½ Saco', cant: '0.5' },
+                                  { label: '1 Saco', cant: '1' },
+                                  { label: '2 Sacos', cant: '2' },
+                                  { label: '3 Sacos', cant: '3' }
+                                ].map(btn => {
+                                  const activo = puroInput.unidad === 'sacos' && Number(puroInput.cantidad) === Number(btn.cant);
+                                  return (
+                                    <button
+                                      key={btn.label}
+                                      type="button"
+                                      onClick={() => { vibrarCampo(30); setPuroInput({ ...puroInput, unidad: 'sacos', cantidad: btn.cant }); }}
+                                      className={`py-2.5 px-2 rounded-xl border text-xs transition-all ${activo ? 'bg-emerald-600 text-white border-emerald-600 font-black shadow-sm' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200 font-bold'}`}
+                                    >
+                                      {btn.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               <div>
                                 <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Cantidad Racionada</label>
                                 <div className="flex border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
-                                  <input type="number" step="0.1" required value={puroInput.cantidad} onChange={(e) => setPuroInput({ ...puroInput, cantidad: e.target.value })} className="w-1/2 p-2.5 outline-none font-bold bg-transparent text-slate-700" placeholder="Ej. 2" />
+                                  <input type="number" inputMode="decimal" step="0.1" required value={puroInput.cantidad} onChange={(e) => setPuroInput({ ...puroInput, cantidad: e.target.value })} className="w-1/2 p-2.5 outline-none font-bold bg-transparent text-slate-700" placeholder="Ej. 2" />
                                   <select value={puroInput.unidad} onChange={(e) => setPuroInput({ ...puroInput, unidad: e.target.value })} className="w-1/2 p-2.5 bg-slate-100 border-l border-slate-200 outline-none text-slate-600 font-bold text-xs">
                                     <option value="sacos">Sacos Enteros</option>
                                     <option value="libras">Libras Sueltas</option>
@@ -5673,7 +6534,7 @@ return (
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-amber-800 uppercase tracking-widest font-bold mb-1.5">Fecha de Entrega</label>
-                              <input type="date" name="fecha" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-2.5 border border-amber-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 bg-white text-slate-800 font-bold" />
+                              <input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-amber-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 bg-white text-slate-800 font-bold" />
                             </div>
                             <div>
                               <label className="block text-amber-800 uppercase tracking-widest font-bold mb-1.5">Etapa Destino</label>
@@ -5781,7 +6642,14 @@ return (
                                   <td className="p-3.5 pl-4 text-slate-400 font-medium">{a.fecha}</td>
                                   <td className="p-3.5">
                                     <p className="font-bold text-slate-800 flex items-center gap-1.5">
-                                      {a.tipo} <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider border">E{a.faseRegistro}</span>
+                                      <span className="inline-flex items-center flex-wrap gap-1.5">
+                                        {a.tipo} <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider border">E{a.faseRegistro}</span>
+                                        {a.origenRegistro === 'qr' && (
+                                          <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider inline-flex items-center gap-0.5">
+                                            <QrCode size={10} /> QR
+                                          </span>
+                                        )}
+                                      </span>
                                     </p>
                                     {a.esSuplemento && <span className="bg-amber-100 text-amber-800 border border-amber-200/50 px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider block w-fit mt-1.5">SUPLEMENTO</span>}
                                     {a.esSuplemento && <span className="text-[10px] text-slate-400 italic block mt-1 leading-snug">({a.detalleMezcla})</span>}
@@ -5804,10 +6672,76 @@ return (
               })()}
 
               {/* TAB: PESO */}
-              {tabActiva === 'peso' && (
+              {tabActiva === 'peso' && (() => {
+                const resumenMuestra = resumirMuestraPesaje(muestraPesosCorral);
+                return (
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-8 animate-in fade-in duration-300">
-                  <div className="md:col-span-4 space-y-6 text-xs font-semibold">
-                    <h3 className="font-extrabold text-slate-800 text-sm mb-1 flex items-center gap-1.5"><Scale size={18} className="text-blue-500" /> Control de Pesaje</h3>
+                  <div className="md:col-span-5 space-y-5 text-xs font-semibold">
+                    <div>
+                      <h3 className="font-extrabold text-slate-800 text-sm flex items-center gap-1.5"><Scale size={18} className="text-blue-500" /> Control de Pesaje en Campo</h3>
+                      <p className="text-[11px] text-slate-400 font-medium mt-0.5">Pesa 3 a 5 cerdos al azar con "+ Sumar a Muestra" para que la app calcule el promedio real sin calculadora.</p>
+                    </div>
+
+                    {/* TARJETA ACTIVA DE MUESTREO MULTI-CERDO */}
+                    {resumenMuestra.cantidad > 0 && (
+                      <div className="bg-emerald-50/70 border-2 border-emerald-300 rounded-2xl p-4 space-y-3.5 shadow-sm animate-in zoom-in-95 duration-150">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="inline-block bg-emerald-600 text-white text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full">
+                              Muestra en Curso · {resumenMuestra.cantidad} {resumenMuestra.cantidad === 1 ? 'cerdo' : 'cerdos'}
+                            </span>
+                            <p className="text-2xl font-black text-emerald-950 mt-1 leading-none">
+                              {resumenMuestra.promedioLb.toFixed(1)} <span className="text-xs font-bold text-emerald-700">lb promedio</span>
+                            </p>
+                            {resumenMuestra.cantidad > 1 && (
+                              <p className="text-[10px] text-emerald-700 font-bold mt-1">
+                                Rango: {resumenMuestra.minimoLb.toFixed(1)} lb – {resumenMuestra.maximoLb.toFixed(1)} lb
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setMuestraPesosCorral([])}
+                            className="text-[11px] font-bold text-rose-600 hover:bg-rose-100/60 px-2.5 py-1 rounded-lg transition-colors"
+                          >
+                            Limpiar
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          {muestraPesosCorral.map((m, idx) => (
+                            <span key={m.id} className="bg-white border border-emerald-200 pl-2.5 pr-1 py-1 rounded-lg inline-flex items-center gap-1.5 text-slate-800 font-extrabold shadow-xs">
+                              <span className="text-[10px] text-slate-400">#{idx + 1}</span>
+                              <span>{m.pesoLb.toFixed(1)} lb</span>
+                              <button
+                                type="button"
+                                onClick={() => setMuestraPesosCorral(prev => prev.filter(item => item.id !== m.id))}
+                                className="text-rose-400 hover:text-rose-600 p-0.5 rounded"
+                                aria-label={`Quitar cerdo ${idx + 1}`}
+                              >
+                                <X size={12} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={guardandoPeso}
+                          onClick={handleGuardarPromedioMuestra}
+                          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-black rounded-xl shadow-md shadow-emerald-600/15 flex items-center justify-center gap-1.5 uppercase tracking-wider text-xs transition-all"
+                        >
+                          {guardandoPeso ? (
+                            <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                          ) : (
+                            <>
+                              <CheckCircle size={16} />
+                              Guardar Promedio ({resumenMuestra.promedioLb.toFixed(1)} lb · {resumenMuestra.cantidad})
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
 
                     {/* SECCIÓN: INGRESO DIRECTO */}
                     <div className="bg-blue-50/20 border border-blue-100 rounded-2xl p-5 space-y-4">
@@ -5818,19 +6752,29 @@ return (
                           <input type="date" value={fechaPesaje} onChange={(e) => setFechaPesaje(e.target.value)} required className="w-full p-2.5 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold" />
                         </div>
                         <div>
-                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Peso Promedio (lb)</label>
-                          <input type="number" step="0.1" min="0" value={pesoIngresado} onChange={(e) => setPesoIngresado(e.target.value)} placeholder="Ej: 75.5" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-black text-sm" />
+                          <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Peso en Báscula (lb)</label>
+                          <input ref={pesoDirectoInputRef} type="number" inputMode="decimal" step="0.1" min="0" value={pesoIngresado} onChange={(e) => setPesoIngresado(e.target.value)} placeholder="Ej: 142.5" required className="w-full p-3 border border-slate-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-black text-base" />
                         </div>
-                        <button type="submit" disabled={guardandoPeso} className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-black rounded-xl transition-all shadow-lg shadow-blue-600/10 flex items-center justify-center gap-1.5 uppercase tracking-wider">
-                          {guardandoPeso ? <div className="animate-spin rounded-full h-4.5 w-4.5 border-2 border-white border-t-transparent" /> : <><CheckCircle size={16} /> Guardar Peso Directo</>}
-                        </button>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={handleAgregarPesoDirectoAMuestra}
+                            disabled={!pesoIngresado || parseFloat(pesoIngresado) <= 0 || guardandoPeso}
+                            className="py-3 px-3 bg-white hover:bg-blue-50 disabled:opacity-40 text-blue-700 border border-blue-200 font-extrabold rounded-xl transition-all flex items-center justify-center gap-1"
+                          >
+                            <Plus size={15} /> Sumar a Muestra
+                          </button>
+                          <button type="submit" disabled={guardandoPeso} className="py-3 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-black rounded-xl transition-all shadow-lg shadow-blue-600/10 flex items-center justify-center gap-1.5">
+                            {guardandoPeso ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <><CheckCircle size={15} /> Guardar Directo</>}
+                          </button>
+                        </div>
                       </form>
                     </div>
 
                     {/* SECCIÓN: FÓRMULA DE SCHAEFFER */}
                     <div className="bg-indigo-50/20 border border-indigo-100 rounded-2xl overflow-hidden shadow-[0_4px_25px_rgb(0,0,0,0.005)]">
                       <button type="button" onClick={() => setExpandirSchaeffer(!expandirSchaeffer)} className="w-full p-4 flex items-center justify-between hover:bg-indigo-100/30 transition-colors font-extrabold text-indigo-900 uppercase text-[10px] tracking-wider border-b border-indigo-100">
-                        <span className="flex items-center gap-1.5"><Calculator size={16} /> Estimador de Schaeffer</span>
+                        <span className="flex items-center gap-1.5"><Calculator size={16} /> Cinta Métrica (Fórmula Schaeffer)</span>
                         <ChevronRight size={16} className={`text-indigo-600 transition-transform duration-200 ${expandirSchaeffer ? 'rotate-90' : ''}`} />
                       </button>
 
@@ -5838,37 +6782,47 @@ return (
                         <div className="p-5 space-y-4 animate-in slide-in-from-top-1 duration-200">
                           <div className="bg-white border border-indigo-100 p-3 rounded-xl leading-relaxed">
                             <p className="text-[10px] text-indigo-700 font-mono font-bold">Fórmula: Peso (lb) = (Circunferencia² × Longitud) / {constanteSchaeffer}</p>
-                            <p className="text-[9px] text-slate-400 mt-1 leading-normal">Medidas en pulgadas. El sistema convierte centímetros automáticamente.</p>
+                            <p className="text-[9px] text-slate-400 mt-1 leading-normal">Mide en centímetros detrás de los codillos y de la base de las orejas a la cola.</p>
                           </div>
 
                           <div className="grid grid-cols-2 gap-3 text-xs">
                             <div>
                               <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Circunferencia (cm)</label>
-                              <input type="number" step="0.1" min="0" value={circunferenciaCm} onChange={(e) => setCircunferenciaCm(e.target.value)} placeholder="Ej: 95" className="w-full p-2.5 border border-indigo-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-bold" />
+                              <input ref={schaefferCircInputRef} type="number" inputMode="decimal" step="0.1" min="0" value={circunferenciaCm} onChange={(e) => setCircunferenciaCm(e.target.value)} placeholder="Ej: 95" className="w-full p-2.5 border border-indigo-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-sm" />
                             </div>
                             <div>
                               <label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Longitud (cm)</label>
-                              <input type="number" step="0.1" min="0" value={longitudCm} onChange={(e) => setLongitudCm(e.target.value)} placeholder="Ej: 58" className="w-full p-2.5 border border-indigo-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-bold" />
+                              <input type="number" inputMode="decimal" step="0.1" min="0" value={longitudCm} onChange={(e) => setLongitudCm(e.target.value)} placeholder="Ej: 58" className="w-full p-2.5 border border-indigo-200 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-sm" />
                             </div>
                           </div>
 
                           {pesoSchaefferCalculado !== null && (
                             <div className="bg-gradient-to-tr from-indigo-600 to-violet-600 text-white p-4 rounded-xl text-center shadow-md shadow-indigo-500/10">
-                              <p className="text-[9px] font-black uppercase tracking-wider text-indigo-200 mb-1 leading-none">Peso Estimado</p>
+                              <p className="text-[9px] font-black uppercase tracking-wider text-indigo-200 mb-1 leading-none">Peso Estimado del Cerdo</p>
                               <p className="text-3xl font-black tracking-tight leading-none">{pesoSchaefferCalculado.toFixed(1)}</p>
-                              <p className="text-[10px] text-indigo-200 font-bold mt-1.5">libras promedio</p>
+                              <p className="text-[10px] text-indigo-200 font-bold mt-1.5">libras</p>
                             </div>
                           )}
 
-                          <button type="button" onClick={handleGuardarPesoSchaeffer} disabled={!pesoSchaefferCalculado || guardandoPeso} className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-350 text-white font-black rounded-xl transition-all shadow-lg shadow-indigo-600/10 flex items-center justify-center gap-1.5 uppercase tracking-wider">
-                            {guardandoPeso ? <div className="animate-spin rounded-full h-4.5 w-4.5 border-2 border-white border-t-transparent" /> : <><CheckCircle size={16} /> Guardar Peso Estimado</>}
-                          </button>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={handleAgregarSchaefferAMuestra}
+                              disabled={!pesoSchaefferCalculado || guardandoPeso}
+                              className="py-3 px-3 bg-white hover:bg-indigo-50 disabled:opacity-40 text-indigo-700 border border-indigo-200 font-extrabold rounded-xl transition-all flex items-center justify-center gap-1"
+                            >
+                              <Plus size={15} /> Sumar a Muestra
+                            </button>
+                            <button type="button" onClick={handleGuardarPesoSchaeffer} disabled={!pesoSchaefferCalculado || guardandoPeso} className="py-3 px-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-black rounded-xl transition-all shadow-lg shadow-indigo-600/10 flex items-center justify-center gap-1.5">
+                              {guardandoPeso ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <><CheckCircle size={15} /> Guardar Solo Este</>}
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="md:col-span-8 space-y-4">
+                  <div className="md:col-span-7 space-y-4">
                     <h3 className="font-extrabold text-slate-800 text-sm mb-1">Historial de Crecimiento & Curva de Pesos</h3>
                     <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm max-h-[460px] overflow-y-auto scrollbar-thin text-xs font-semibold">
                       <table className="w-full text-left border-collapse">
@@ -5884,10 +6838,17 @@ return (
                           {listPesos.filter(p => p.loteId === loteActivo.id && p.pesoPromedio).sort((a, b) => new Date(b.fecha || 0) - new Date(a.fecha || 0)).map(p => (
                             <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
                               <td className="p-3.5 pl-5 text-slate-400 font-medium">{p.fecha}</td>
-                              <td className="p-3.5 text-right font-black text-blue-600 text-sm">{parseFloat(p.pesoPromedio).toFixed(1)} lb</td>
+                              <td className="p-3.5 text-right">
+                                <span className="font-black text-blue-600 text-sm">{parseFloat(p.pesoPromedio).toFixed(1)} lb</span>
+                                {p.cantidadMuestra > 1 && (
+                                  <span className="block text-[10px] text-emerald-700 font-bold">Muestra · {p.cantidadMuestra} cerdos</span>
+                                )}
+                              </td>
                               <td className="p-3.5 text-center">
                                 {p.metodo === 'schaeffer' ? (
                                   <span className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider">Schaeffer</span>
+                                ) : p.metodo === 'mixto' ? (
+                                  <span className="bg-emerald-50 border border-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider">Muestra Mixta</span>
                                 ) : (
                                   <span className="bg-blue-50 border border-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider">Directo</span>
                                 )}
@@ -5903,7 +6864,8 @@ return (
                     </div>
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* TAB: SANIDAD Y BAJAS */}
               {tabActiva === 'sanidad' && (
@@ -6043,8 +7005,8 @@ return (
                       <h3 className="font-extrabold text-slate-800 text-base mb-4 flex items-center gap-2 border-b border-slate-50 pb-3"><Receipt size={18} className="text-slate-500" /> Gastos Operativos Directos</h3>
                       <form onSubmit={(e) => { e.preventDefault(); const fd = new FormData(e.target); setGastosExtra(prev => [...safeArr(prev), { id: crypto.randomUUID(), loteId: loteActivo.id, fecha: fd.get('fecha'), descripcion: fd.get('descripcion').trim(), monto: parseFloat(fd.get('monto')) }]); e.target.reset(); }} className="space-y-4 font-semibold">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha</label><input type="date" name="fecha" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
-                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Monto Gasto (Q)</label><input type="number" name="monto" step="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold" /></div>
+                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Fecha</label><input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
+                          <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Monto Gasto (Q)</label><input type="number" inputMode="decimal" name="monto" step="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50 font-bold" /></div>
                         </div>
                         <div><label className="block text-slate-400 uppercase tracking-widest font-bold mb-1.5">Descripción / Concepto</label><input type="text" name="descripcion" required placeholder="Ej: Flete de acarreo / aserrín" className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50/50" /></div>
                         <button type="submit" className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-xl transition-all shadow-md uppercase tracking-wider">Añadir Gasto Directo</button>
@@ -6054,7 +7016,7 @@ return (
                       <h3 className="font-extrabold text-rose-950 text-base flex items-center gap-1.5"><HeartPulse size={20} className="text-rose-600" /> Registro de Bajas y Decesos</h3>
                       <form onSubmit={handleRegistrarBaja} className="space-y-4 font-semibold text-xs">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div><label className="block text-slate-500 uppercase tracking-widest font-bold mb-1.5">Fecha de Baja</label><input type="date" name="fecha" required defaultValue={new Date().toISOString().split('T')[0]} className="w-full p-2.5 border border-rose-200 bg-white rounded-xl outline-none" /></div>
+                          <div><label className="block text-slate-500 uppercase tracking-widest font-bold mb-1.5">Fecha de Baja</label><input type="date" name="fecha" required defaultValue={todayIso()} className="w-full p-2.5 border border-rose-200 bg-white rounded-xl outline-none" /></div>
                           <div><label className="block text-slate-500 uppercase tracking-widest font-bold mb-1.5">Cantidad Muertes</label><input type="number" name="cantidad" required min="1" className="w-full p-2.5 border border-rose-200 bg-white rounded-xl outline-none font-bold" /></div>
                         </div>
                         <div><label className="block text-slate-500 uppercase tracking-widest font-bold mb-1.5">Causa / Diagnóstico de Muerte</label><input type="text" name="causa" required placeholder="Ej. Neumonía / Infección bacteriana" className="w-full p-2.5 border border-rose-200 bg-white rounded-xl outline-none" /></div>
@@ -6549,7 +7511,7 @@ return (
       .filter(b => b.loteId === loteActivo.id)
       .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
     const ultimaIntervencion = tratamientosLote[0];
-    const estadoSanitario = st.mortalidadPorcentaje > 5 || tareasLote.some(t => t.estado === 'pendiente' && t.fechaObjetivo && t.fechaObjetivo < new Date().toISOString().split('T')[0])
+    const estadoSanitario = st.mortalidadPorcentaje > 5 || tareasLote.some(t => t.estado === 'pendiente' && t.fechaObjetivo && t.fechaObjetivo < todayIso())
       ? 'Atención'
       : 'Normal';
     const checklistSanitario = ['Diarrea', 'Tos', 'Falta de apetito', 'Retrasados', 'Cojera', 'Amontonamiento por frío/calor', 'Bebedero sin agua'];
@@ -6711,49 +7673,198 @@ return (
   const renderPrepararVenta = () => {
     const totalLbs = ventaPesos.reduce((a, b) => a + b, 0);
     const totalDinero = totalLbs * ventaPrecio;
+    const promedioLb = ventaPesos.length > 0 ? totalLbs / ventaPesos.length : 0;
+    const loteVenta = corralSeleccionado ? getLoteActivo(corralSeleccionado.id) : null;
+    const statsVenta = loteVenta ? calcularEstadisticasLote(loteVenta) : null;
+    const progresoEmbarque = calcularProgresoEmbarque({
+      pesosCapturados: ventaPesos,
+      cerdosVivos: statsVenta?.cantidadActual || 0
+    });
 
     return (
-      <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6 animate-in fade-in duration-300">
-        <button onClick={() => setVista('corralDetail')} className="flex items-center text-emerald-600 hover:text-emerald-800 font-bold transition-colors text-xs gap-1">
-          <ChevronRight size={18} className="rotate-180" /> Volver al Corral
-        </button>
-
-        <div className="border-b border-slate-100 pb-4">
-          <h2 className="text-2xl font-black text-slate-900 flex items-center gap-2">
-            <Scale size={26} className="text-emerald-500" /> Báscula de Venta
-          </h2>
-          <p className="text-slate-500 text-xs mt-1">Registra el peso exacto de cada animal al cargarse en el camión. Se generará la liquidación oficial.</p>
+      <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-5 animate-in fade-in duration-300">
+        <div className="flex items-center justify-between gap-2">
+          <button onClick={() => setVista('corralDetail')} className="flex items-center text-emerald-600 hover:text-emerald-800 font-bold transition-colors text-xs gap-1 py-1">
+            <ChevronRight size={18} className="rotate-180" /> Volver a {corralSeleccionado?.nombre || 'Corral'}
+          </button>
+          <span className="text-[10px] font-black uppercase tracking-widest bg-slate-900 text-emerald-400 px-3 py-1 rounded-full">
+            Modo Galpón · Auto-guardado activo
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
+        <div className="border-b border-slate-100 pb-4 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-black text-slate-900 flex items-center gap-2">
+              <Scale size={26} className="text-emerald-500" /> Báscula de Venta · {corralSeleccionado?.nombre}
+            </h2>
+            <p className="text-slate-500 text-xs mt-1">Los pesos quedan respaldados al instante en este teléfono aunque entre una llamada o se apague la pantalla.</p>
+          </div>
+        </div>
+
+        {borradorVentaRestaurado && ventaPesos.length > 0 && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-bold text-emerald-900 flex items-center gap-2">
+              <CheckCircle size={16} className="text-emerald-600 shrink-0" />
+              Se recuperaron {ventaPesos.length} cerdos pesados previamente en este corral.
+            </span>
+            <button type="button" onClick={handleLimpiarBorradorBascula} className="text-rose-600 hover:underline font-extrabold">
+              Empezar desde cero
+            </button>
+          </div>
+        )}
+
+        {/* CONTADOR EN VIVO DE EMBARQUE */}
+        <div className={`rounded-2xl p-4 border shadow-xs ${progresoEmbarque.excedido ? 'bg-rose-50 border-rose-300' : progresoEmbarque.completo ? 'bg-emerald-50 border-emerald-300' : 'bg-slate-900 text-white border-slate-800'}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+            <div>
+              <p className={`text-[10px] font-black uppercase tracking-widest ${progresoEmbarque.excedido ? 'text-rose-600' : progresoEmbarque.completo ? 'text-emerald-700' : 'text-slate-400'}`}>
+                Control de Carga al Camión
+              </p>
+              <p className={`text-lg sm:text-xl font-black mt-0.5 ${progresoEmbarque.excedido ? 'text-rose-900' : progresoEmbarque.completo ? 'text-emerald-950' : 'text-white'}`}>
+                Pesados: {progresoEmbarque.pesados} de {progresoEmbarque.vivos} vivos
+                <span className={`ml-2 text-xs font-extrabold ${progresoEmbarque.excedido ? 'text-rose-600' : progresoEmbarque.completo ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                  {progresoEmbarque.excedido
+                    ? `· ¡Excede por ${progresoEmbarque.pesados - progresoEmbarque.vivos}!`
+                    : progresoEmbarque.completo
+                      ? '· ¡Corral completo!'
+                      : `· Faltan ${progresoEmbarque.faltan}`}
+                </span>
+              </p>
+            </div>
+            {ventaPesos.length > 0 && (
+              <div className={`px-3 py-1.5 rounded-xl text-right ${progresoEmbarque.excedido || progresoEmbarque.completo ? 'bg-white/80 text-slate-900' : 'bg-slate-800 text-slate-100'}`}>
+                <span className="block text-[9px] uppercase font-bold opacity-70">Promedio</span>
+                <span className="font-black text-sm">{promedioLb.toFixed(1)} lb/cerdo</span>
+              </div>
+            )}
+          </div>
+          <div className={`w-full h-2.5 rounded-full overflow-hidden ${progresoEmbarque.excedido || progresoEmbarque.completo ? 'bg-white/80' : 'bg-slate-800'}`}>
+            <div
+              className={`h-full transition-all duration-300 ${progresoEmbarque.excedido ? 'bg-rose-500' : 'bg-emerald-500'}`}
+              style={{ width: `${progresoEmbarque.porcentaje}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-5">
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 text-xs">
-              <h3 className="font-extrabold text-slate-800 text-sm mb-3">1. Configurar Precio Acordado</h3>
+              <h3 className="font-extrabold text-slate-800 text-sm mb-3">1. Precio Acordado por Libra</h3>
               <div className="relative font-bold">
-                <span className="absolute left-4 top-3 text-slate-400 text-sm">Q</span>
-                <input type="number" step="0.01" value={ventaPrecio} onChange={(e) => setVentaPrecio(parseFloat(e.target.value) || 0)} className="w-full pl-9 p-2.5 border border-emerald-300 bg-emerald-50/10 text-emerald-850 font-black text-base rounded-xl outline-none" />
+                <span className="absolute left-4 top-3.5 text-slate-400 text-base">Q</span>
+                <input type="number" inputMode="decimal" step="0.01" value={ventaPrecio} onChange={(e) => setVentaPrecio(parseFloat(e.target.value) || 0)} className="w-full pl-9 p-3 border border-emerald-300 bg-emerald-50/10 text-emerald-950 font-black text-lg rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/20" />
               </div>
             </div>
 
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 text-xs space-y-4">
-              <h3 className="font-extrabold text-slate-800 text-sm">2. Capturar Pesos en Báscula</h3>
-              <form onSubmit={(e) => { e.preventDefault(); if (pesoInputVenta) { setVentaPesos([...ventaPesos, parseFloat(pesoInputVenta)]); setPesoInputVenta(''); } }} className="flex gap-2">
-                <input type="number" step="0.1" value={pesoInputVenta} onChange={(e) => setPesoInputVenta(e.target.value)} placeholder="Peso en libras (ej: 220)" autoFocus className="flex-1 p-3 border border-slate-200 rounded-xl outline-none focus:border-emerald-500 text-lg font-black text-center" />
-                <button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-6 rounded-xl shadow-md transition-colors text-xs flex items-center justify-center gap-1 shrink-0"><Plus size={16} /> Añadir</button>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-extrabold text-slate-800 text-sm">2. Capturar Cerdo en Báscula</h3>
+                <span className="text-[11px] font-bold text-slate-400">Cerdo #{ventaPesos.length + 1}</span>
+              </div>
+
+              <form onSubmit={handleCapturarPesoBascula} className="flex gap-2.5">
+                <input
+                  ref={ventaInputRef}
+                  type="number"
+                  inputMode="decimal"
+                  enterKeyHint="done"
+                  step="0.1"
+                  value={pesoInputVenta}
+                  onChange={(e) => {
+                    setPesoInputVenta(e.target.value);
+                    if (alertaPesoSospechoso) setAlertaPesoSospechoso(null);
+                  }}
+                  placeholder="Ej: 220"
+                  autoFocus
+                  className="flex-1 py-3.5 px-4 border-2 border-slate-200 rounded-2xl outline-none focus:border-emerald-500 text-2xl sm:text-3xl font-black text-center text-slate-900"
+                />
+                <button
+                  type="submit"
+                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black px-6 sm:px-8 rounded-2xl shadow-md transition-colors text-sm flex items-center justify-center gap-1.5 shrink-0 min-h-[56px]"
+                >
+                  <Plus size={20} /> Anotar
+                </button>
               </form>
 
-              <div className="bg-slate-50 border border-slate-150 rounded-xl p-4 min-h-[150px] shadow-inner">
-                <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3 leading-none">Pigs Pesados ({ventaPesos.length})</h4>
+              {/* ALERTA ANTI-ERRORES DE DEDO EN CAMPO */}
+              {alertaPesoSospechoso && (
+                <div role="alert" className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 space-y-3 animate-in zoom-in-95 duration-150">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle size={20} className="text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-black text-amber-950 text-sm">Revisá este peso antes de sumarlo</p>
+                      <p className="text-amber-900 font-semibold text-xs mt-0.5 leading-relaxed">{alertaPesoSospechoso.mensaje}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAlertaPesoSospechoso(null);
+                        ventaInputRef.current?.select?.();
+                        ventaInputRef.current?.focus();
+                      }}
+                      className="py-3 px-3 bg-white hover:bg-slate-100 text-slate-800 border border-amber-300 font-extrabold rounded-xl text-xs"
+                    >
+                      Corregir número
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => agregarPesoConfirmadoABascula(alertaPesoSospechoso.pesoRedondeado)}
+                      className="py-3 px-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-xs"
+                    >
+                      Sí, pesa {alertaPesoSospechoso.pesoRedondeado} lb
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 min-h-[150px] shadow-inner">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none">
+                    Cerdos Anotados ({ventaPesos.length})
+                  </h4>
+                  {ventaPesos.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          vibrarCampo(35);
+                          setVentaPesos(prev => prev.slice(0, -1));
+                        }}
+                        className="bg-white hover:bg-amber-50 text-slate-700 border border-slate-200 px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold inline-flex items-center gap-1 shadow-2xs"
+                      >
+                        <RotateCcw size={12} /> Deshacer último ({ventaPesos[ventaPesos.length - 1]} lb)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleLimpiarBorradorBascula}
+                        className="text-rose-500 hover:text-rose-700 px-2 py-1.5 text-[11px] font-bold"
+                      >
+                        Vaciar
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 {ventaPesos.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-24 text-slate-400 italic">
-                    Comienza a capturar pesos individuales.
+                    Escribe las libras del primer cerdo y toca Anotar.
                   </div>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {ventaPesos.map((peso, index) => (
-                      <div key={index} className="bg-white border border-slate-200 shadow-sm pl-3 pr-1 py-1 rounded-lg flex items-center gap-2 font-bold animate-in zoom-in-95 duration-150">
-                        <span className="text-slate-800 text-xs">{peso} <span className="text-[10px] text-slate-450 font-normal">lb</span></span>
-                        <button onClick={() => setVentaPesos(ventaPesos.filter((_, i) => i !== index))} className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 p-1 rounded-md transition-colors"><X size={13} /></button>
+                      <div key={index} className="bg-white border border-slate-200 shadow-xs pl-3 pr-1.5 py-1.5 rounded-xl flex items-center gap-2 font-bold animate-in zoom-in-95 duration-150">
+                        <span className="text-[10px] font-black text-slate-400">#{index + 1}</span>
+                        <span className="text-slate-900 text-sm font-black">{peso} <span className="text-[10px] text-slate-400 font-semibold">lb</span></span>
+                        <button
+                          type="button"
+                          onClick={() => setVentaPesos(ventaPesos.filter((_, i) => i !== index))}
+                          className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 p-1.5 rounded-lg transition-colors"
+                          aria-label={`Eliminar cerdo #${index + 1} (${peso} lb)`}
+                        >
+                          <X size={14} />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -6764,20 +7875,21 @@ return (
 
           <div className="lg:col-span-1">
             <div className="bg-slate-900 rounded-3xl p-5 shadow-xl text-white sticky top-8 text-xs">
-              <h3 className="font-extrabold text-base mb-4 text-emerald-400 flex items-center gap-1.5 border-b border-slate-850 pb-3"><Receipt size={20} /> Liquidación Venta</h3>
+              <h3 className="font-extrabold text-base mb-4 text-emerald-400 flex items-center gap-1.5 border-b border-slate-800 pb-3"><Receipt size={20} /> Liquidación Venta</h3>
 
               <div className="space-y-3 mb-6 font-semibold">
                 <div className="flex justify-between items-end"><span className="text-slate-400">Total Cabezas:</span><span className="text-lg font-bold">{ventaPesos.length}</span></div>
+                <div className="flex justify-between items-end"><span className="text-slate-400">Peso Promedio:</span><span className="text-sm font-bold text-slate-200">{promedioLb.toFixed(1)} lb</span></div>
                 <div className="flex justify-between items-end"><span className="text-slate-400">Libras Totales:</span><span className="text-lg font-bold text-amber-400">{totalLbs.toFixed(1)} lb</span></div>
                 <div className="flex justify-between items-end"><span className="text-slate-400">Precio Libra:</span><span className="text-sm">Q{ventaPrecio.toFixed(2)}</span></div>
               </div>
 
-              <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 text-center mb-6 shadow-inner">
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center mb-6 shadow-inner">
                 <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mb-1.5 leading-none">Monto Total a Cobrar</p>
                 <p className="text-3xl font-black text-emerald-400">{formatearMoneda(totalDinero)}</p>
               </div>
 
-              <button onClick={procesarVenta} className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-black py-3 rounded-xl shadow-lg shadow-emerald-500/10 transition-all text-xs uppercase tracking-wider flex items-center justify-center gap-1.5">
+              <button onClick={procesarVenta} className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3.5 rounded-xl shadow-lg shadow-emerald-500/10 transition-all text-xs uppercase tracking-wider flex items-center justify-center gap-1.5">
                 <CheckCircle size={16} /> Registrar Venta Oficial
               </button>
             </div>
@@ -7239,7 +8351,7 @@ return (
           </div>
           <div className="flex flex-col sm:flex-row gap-2 shrink-0 self-start md:self-auto">
             <button
-              onClick={() => descargarPDF('reporte-financiero-global-pdf', `Reporte_Financiero_Global_${new Date().toISOString().split('T')[0]}.pdf`)}
+              onClick={() => descargarPDF('reporte-financiero-global-pdf', `Reporte_Financiero_Global_${todayIso()}.pdf`)}
               className="bg-slate-950 hover:bg-slate-900 text-white font-black py-2.5 px-4 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2 text-sm"
             >
               <Printer size={16} /> Imprimir reporte completo
@@ -7743,6 +8855,770 @@ return (
       </div>
     );
   };
+  const renderModalQrTolva = () => {
+    const originUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    const loteDetectado = qrCorralDetectado ? getLoteActivo(qrCorralDetectado.id) : null;
+    const statsDetectado = loteDetectado ? calcularEstadisticasLote(loteDetectado) : null;
+    const contextoTolva = qrCorralDetectado
+      ? resolverContextoTolvaQr({
+          corral: qrCorralDetectado,
+          loteActivo: loteDetectado,
+          stats: statsDetectado,
+          cronograma: CRONOGRAMA_ALIMENTACION,
+          catalogoAlimento: listCatAlimentos,
+          inventarioCentral
+        })
+      : null;
+
+    const infoAlimentoSeleccionado = listCatAlimentos.find(a => a.nombre === qrTipoAlimento) || null;
+    const stockItemSeleccionado = inventarioCentral.find(i => i.nombre === qrTipoAlimento) || null;
+    const lbsPorSacoSel = Number(infoAlimentoSeleccionado?.librasPorSaco) || 50;
+    const precioSacoSel = Number(infoAlimentoSeleccionado?.precioSaco) || 0;
+    const stockDisponibleLbs = Number(stockItemSeleccionado?.stockLbs) || 0;
+    const stockDisponibleSacos = lbsPorSacoSel > 0 ? stockDisponibleLbs / lbsPorSacoSel : 0;
+
+    const cantNumerica = parseFloat(qrCantidad) || 0;
+    const librasADescontar = qrUnidad === 'sacos' ? cantNumerica * lbsPorSacoSel : cantNumerica;
+    const sacosADescontar = lbsPorSacoSel > 0 ? librasADescontar / lbsPorSacoSel : 0;
+    const costoEstimadoQr = qrUnidad === 'sacos'
+      ? cantNumerica * precioSacoSel
+      : cantNumerica * (precioSacoSel / lbsPorSacoSel);
+    const stockInsuficientePreview = librasADescontar > stockDisponibleLbs + 1e-6;
+    const hoyQr = todayIso();
+    const corralLlaveQr = qrCorralDetectado || (qrExitoReciente ? listCorrales.find(c => c.id === qrExitoReciente.corralId) : null);
+    const loteLlaveQr = corralLlaveQr ? getLoteActivo(corralLlaveQr.id) : null;
+    const tareasUrgentesQr = loteLlaveQr
+      ? listTareasSanidad
+          .filter(t => t.loteId === loteLlaveQr.id && (t.estado || 'pendiente') === 'pendiente')
+          .map(t => {
+            const fechaObj = t.fechaObjetivo || (loteLlaveQr.fechaIngreso ? addDaysToIsoDate(loteLlaveQr.fechaIngreso, Number(t.dia) || 0) : '');
+            return { ...t, fechaObj };
+          })
+          .filter(t => t.fechaObj && t.fechaObj <= hoyQr)
+      : [];
+
+    const renderLlaveMaestraQr = (corralRef) => {
+      if (!corralRef) return null;
+      return (
+        <div className="border-t border-slate-200/80 pt-4 space-y-3 text-left">
+          {tareasUrgentesQr.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 space-y-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 flex items-center gap-1.5">
+                <Syringe size={13} className="text-amber-600" /> Pendiente Sanitario Hoy en {corralRef.nombre}
+              </p>
+              {tareasUrgentesQr.map(t => (
+                <div key={t.id} className="bg-white border border-amber-100 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-extrabold text-slate-800 text-xs truncate">{t.tarea}</p>
+                    <p className="text-[10px] font-semibold text-amber-700">{t.fechaObj < hoyQr ? `Atrasada (${t.fechaObj})` : 'Toca hoy'}</p>
+                  </div>
+                  {t.innosureDosis ? (
+                    <button
+                      type="button"
+                      onClick={() => irACorralDesdeQr(corralRef, 'sanidad')}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-extrabold px-3 py-1.5 rounded-lg shrink-0"
+                    >
+                      Aplicar dosis
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        vibrarCampo(45);
+                        handleActualizarTareaSanidad(t.id, { estado: 'hecho' });
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-extrabold px-3 py-1.5 rounded-lg shrink-0"
+                    >
+                      Marcar hecha
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div>
+            <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-2">
+              Llave Maestra de {corralRef.nombre} · Ir directo a:
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => irACorralDesdeQr(corralRef, 'peso')}
+                className="py-2.5 px-2 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 border border-slate-200 rounded-xl text-[11px] font-extrabold text-slate-700 flex items-center justify-center gap-1 transition-colors"
+              >
+                <Scale size={13} /> Pesar
+              </button>
+              <button
+                type="button"
+                onClick={() => irACorralDesdeQr(corralRef, 'sanidad')}
+                className="py-2.5 px-2 bg-slate-100 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 border border-slate-200 rounded-xl text-[11px] font-extrabold text-slate-700 flex items-center justify-center gap-1 transition-colors"
+              >
+                <HeartPulse size={13} /> Sanidad / Baja
+              </button>
+              <button
+                type="button"
+                onClick={() => irACorralDesdeQr(corralRef, 'resumen')}
+                className="py-2.5 px-2 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 border border-slate-200 rounded-xl text-[11px] font-extrabold text-slate-700 flex items-center justify-center gap-1 transition-colors"
+              >
+                <PieChart size={13} /> Resumen
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <>
+        {/* PLIEGO OCULTO PARA IMPRESIÓN PDF DE RÓTULOS QR DE CORRALES.
+            Se monta solo con el modal abierto: codificar un QR por corral en cada
+            arranque de la app era trabajo puro para una función que quizá nadie abra. */}
+        {qrModalAbierto && (
+        <div className="absolute -left-[9999px] top-0 pointer-events-none">
+          <div id="fichas-qr-corrales-pdf" className="p-10 w-[800px] bg-white text-slate-900 font-sans">
+            <div className="text-center border-b-4 border-slate-900 pb-5 mb-8">
+              <h1 className="text-3xl font-black tracking-tight uppercase text-slate-900">RÓTULOS QR PARA TOLVAS DE CORRAL</h1>
+              <p className="text-sm font-bold text-slate-500 mt-1 uppercase tracking-widest">Porcicontrol · Descuento Rápido de Concentrado en Campo</p>
+              <p className="text-xs text-slate-500 mt-2">Recorta y plastifica cada tarjeta en la tolva o puerta del corral correspondiente.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-6">
+              {listCorrales.map(corral => {
+                const payload = buildCorralQrPayload(corral, originUrl);
+                return (
+                  <div key={`pdf-qr-${corral.id}`} className="border-2 border-dashed border-slate-400 rounded-2xl p-6 flex flex-col items-center text-center bg-white">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full mb-2">
+                      TOLVA DE ALIMENTACIÓN
+                    </span>
+                    <h2 className="text-2xl font-black text-slate-900 uppercase">{corral.nombre}</h2>
+                    <p className="text-xs font-bold text-slate-500 mb-4">Capacidad máx: {corral.capacidad} cerdos</p>
+                    {/* Sin borde pegado al código: el marco impreso invadía la zona
+                        de silencio y los lectores fallaban al ras del rótulo. */}
+                    <div className="p-4 bg-white rounded-2xl ring-2 ring-slate-900 ring-offset-4 ring-offset-white">
+                      <CodigoQrSvg valor={payload} size={175} etiqueta={`Código QR de ${corral.nombre}`} />
+                    </div>
+                    <p className="text-[11px] font-extrabold text-slate-700 mt-5 uppercase tracking-wider">
+                      Escanea al vaciar concentrado en la tolva
+                    </p>
+                    <p className="text-[9px] font-mono text-slate-400 mt-1 break-all">{corral.id}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* MODAL INTERACTIVO QR TOLVA */}
+        {qrModalAbierto && (
+          <div
+            className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-[9990] flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-modal-qr"
+          >
+            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-xl w-full overflow-hidden my-auto animate-in zoom-in-95 duration-200 max-h-[92dvh] flex flex-col">
+              {/* Header del Modal */}
+              <div className="bg-slate-900 text-white px-5 py-4 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-500/20 border border-emerald-500/30 rounded-xl text-emerald-400">
+                    <QrCode size={20} />
+                  </div>
+                  <div>
+                    <h3 id="titulo-modal-qr" className="font-extrabold text-base leading-tight">Tolva Inteligente por QR</h3>
+                    <p className="text-[11px] text-slate-400 font-medium">Descuento rápido de concentrado por corral</p>
+                  </div>
+                </div>
+                <button type="button" onClick={cerrarModalQrTolva} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors">
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Selector de Pestaña: Escanear vs Imprimir Rótulos */}
+              <div className="bg-slate-100 p-1.5 border-b border-slate-200 flex gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => { setQrModalModo('escanear'); setQrErrorMensaje(''); }}
+                  className={`flex-1 py-2 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all ${
+                    qrModalModo === 'escanear'
+                      ? 'bg-white text-slate-900 shadow-sm border border-slate-200/80'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <ScanLine size={15} className="text-emerald-600" /> Escanear / Descontar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { detenerCamaraQr(); setQrModalModo('imprimir'); setQrErrorMensaje(''); }}
+                  className={`flex-1 py-2 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all ${
+                    qrModalModo === 'imprimir'
+                      ? 'bg-white text-slate-900 shadow-sm border border-slate-200/80'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Printer size={15} className="text-indigo-600" /> Rótulos QR ({listCorrales.length})
+                </button>
+              </div>
+
+              {/* Cuerpo del Modal */}
+              <div className="p-5 overflow-y-auto space-y-5 flex-1">
+                {qrErrorMensaje && (
+                  <div role="alert" aria-live="assertive" className="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-2xl text-xs font-bold flex items-start gap-2.5">
+                    <AlertTriangle size={16} className="shrink-0 mt-0.5 text-rose-600" />
+                    <span className="flex-1 leading-relaxed">{qrErrorMensaje}</span>
+                  </div>
+                )}
+
+                {/* MODO 1: ESCANEAR Y DESCONTAR */}
+                {qrModalModo === 'escanear' && (
+                  <>
+                    {/* SUB-VISTA A: ÉXITO RECIENTE */}
+                    {qrExitoReciente ? (
+                      <div role="status" aria-live="polite" className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-6 text-center space-y-4 animate-in fade-in duration-200">
+                        <div className="w-14 h-14 bg-emerald-500 text-white rounded-full flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
+                          <Check size={30} />
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+                            Descuento Aplicado en Bodega
+                          </span>
+                          <h4 className="text-xl font-black text-slate-900 mt-2">{qrExitoReciente.corralNombre}</h4>
+                          <p className="text-xs font-semibold text-slate-500">{qrExitoReciente.loteNombre} · Fase {qrExitoReciente.fase}</p>
+                        </div>
+
+                        <div className="bg-white rounded-2xl p-4 border border-emerald-100 text-left space-y-2 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400 font-semibold">Concentrado:</span>
+                            <span className="font-extrabold text-slate-800">{qrExitoReciente.tipoAlimento}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400 font-semibold">Cantidad descargada:</span>
+                            <span className="font-black text-emerald-700">
+                              {qrExitoReciente.libras.toFixed(1)} lb ({qrExitoReciente.sacos.toFixed(2)} sacos)
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400 font-semibold">Costo cargado al lote:</span>
+                            <span className="font-bold text-rose-600">-{formatearMoneda(qrExitoReciente.costo)}</span>
+                          </div>
+                          <div className="flex justify-between border-t border-slate-100 pt-2">
+                            <span className="text-slate-400 font-semibold">Queda en Bodega Central:</span>
+                            <span className="font-extrabold text-slate-800">
+                              {qrExitoReciente.stockRestanteSacos.toFixed(1)} sacos ({qrExitoReciente.stockRestanteLbs.toFixed(0)} lb)
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQrExitoReciente(null);
+                              setQrCorralDetectado(null);
+                              setQrErrorMensaje('');
+                            }}
+                            className="flex-1 py-3 px-4 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            <ScanLine size={15} className="text-emerald-400" /> Escanear Otra Tolva
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cerrarModalQrTolva}
+                            className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl text-xs transition-colors"
+                          >
+                            Finalizar
+                          </button>
+                        </div>
+
+                        {renderLlaveMaestraQr(corralLlaveQr)}
+                      </div>
+                    ) : !qrCorralDetectado ? (
+                      /* SUB-VISTA B: CÁMARA ESCÁNER + SELECTOR RÁPIDO DE CORRAL */
+                      <div className="space-y-4">
+                        {qrUltimoDescuentoRonda && (
+                          <div role="status" aria-live="polite" className="bg-emerald-600 text-white px-4 py-3 rounded-2xl shadow-md flex items-center justify-between gap-3 animate-in slide-in-from-top-2 duration-200">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="bg-white/20 p-1.5 rounded-full shrink-0">
+                                <Check size={16} />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-black truncate">
+                                  {qrUltimoDescuentoRonda.corralNombre}: -{qrUltimoDescuentoRonda.libras.toFixed(0)} lb ({qrUltimoDescuentoRonda.tipoAlimento})
+                                </p>
+                                <p className="text-[10px] text-emerald-100 font-bold">
+                                  Ronda activa · Apunta al QR del siguiente corral (quedan {qrUltimoDescuentoRonda.stockRestanteSacos.toFixed(1)} sacos)
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={cerrarModalQrTolva}
+                              className="bg-emerald-800/70 hover:bg-emerald-900 text-white text-[11px] font-extrabold px-2.5 py-1.5 rounded-xl shrink-0"
+                            >
+                              Listo
+                            </button>
+                          </div>
+                        )}
+                        <div className="relative bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 aspect-[4/3] sm:aspect-video flex flex-col items-center justify-center">
+                          {/* El <video> se mantiene montado siempre: si solo existiera
+                              al estar activa la cámara, el stream llegaría antes que el
+                              elemento y quedaría sin destino. */}
+                          <video
+                            ref={qrVideoRef}
+                            playsInline
+                            muted
+                            aria-label="Vista de la cámara para escanear el código QR del corral"
+                            className={`w-full h-full object-cover ${qrCamaraEstado === 'activa' ? 'block' : 'hidden'}`}
+                          />
+                          {qrCamaraEstado === 'activa' && (
+                            <>
+                              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                                <div className="w-44 h-44 border-2 border-emerald-400/90 rounded-2xl shadow-[0_0_0_9999px_rgba(2,6,23,0.45)] relative">
+                                  <div className="absolute inset-x-2 top-1/2 h-0.5 bg-emerald-400 animate-pulse" />
+                                </div>
+                                <span className="mt-3 bg-slate-950/80 text-emerald-300 text-[11px] font-bold px-3 py-1 rounded-full border border-emerald-500/30">
+                                  Apunta al código QR pegado en la tolva del corral
+                                </span>
+                              </div>
+                              {qrLinternaDisponible && (
+                                <button
+                                  type="button"
+                                  onClick={alternarLinternaQr}
+                                  aria-pressed={qrLinternaActiva}
+                                  className={`absolute top-3 right-3 p-2.5 rounded-xl border transition-colors ${
+                                    qrLinternaActiva
+                                      ? 'bg-amber-400 border-amber-300 text-slate-950'
+                                      : 'bg-slate-950/70 border-slate-700 text-slate-200 hover:bg-slate-900'
+                                  }`}
+                                >
+                                  {qrLinternaActiva ? <Flashlight size={16} /> : <FlashlightOff size={16} />}
+                                  <span className="sr-only">
+                                    {qrLinternaActiva ? 'Apagar linterna' : 'Encender linterna'}
+                                  </span>
+                                </button>
+                              )}
+                            </>
+                          )}
+                          {qrCamaraEstado === 'iniciando' && (
+                            <div className="p-6 text-center text-slate-300 space-y-3">
+                              <div className="animate-spin rounded-full h-7 w-7 border-2 border-emerald-400 border-t-transparent mx-auto" />
+                              <p className="text-xs font-bold">Abriendo la cámara trasera...</p>
+                            </div>
+                          )}
+                          {(qrCamaraEstado === 'inactiva' || qrCamaraEstado === 'error') && (
+                            <div className="p-6 text-center text-slate-300 space-y-2.5">
+                              <Camera size={32} className="mx-auto text-emerald-400/80" />
+                              <p className="text-xs font-bold max-w-sm mx-auto leading-relaxed">
+                                {qrCamaraError || 'Preparando el escáner de QR...'}
+                              </p>
+                              {qrCamaraReintentable && (
+                                <button
+                                  type="button"
+                                  onClick={reintentarCamaraQr}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-4 py-2 rounded-xl text-xs inline-flex items-center gap-1.5 transition-colors"
+                                >
+                                  <RefreshCw size={14} /> Reintentar
+                                </button>
+                              )}
+                              <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                                También puedes tomar una foto del QR o tocar el corral directamente en la lista inferior.
+                              </p>
+                            </div>
+                          )}
+                          {qrCamaraEstado === 'activa' && qrMotorLector === 'jsqr' && (
+                            <span className="absolute bottom-2 left-2 bg-slate-950/70 text-slate-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-slate-700">
+                              Lector compatible
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Acciones alternativas: Foto de cámara o lector manual */}
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <label className={`flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-3.5 rounded-xl text-xs flex items-center justify-center gap-2 transition-colors border border-slate-200 ${qrLeyendoFoto ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}>
+                            {qrLeyendoFoto ? (
+                              <div className="animate-spin rounded-full h-4 w-4 border-2 border-emerald-600 border-t-transparent" />
+                            ) : (
+                              <Camera size={15} className="text-emerald-600" />
+                            )}
+                            <span>{qrLeyendoFoto ? 'Leyendo la foto...' : 'Tomar Foto / Leer Imagen QR'}</span>
+                            <input type="file" accept="image/*" capture="environment" disabled={qrLeyendoFoto} onChange={handleEscanearImagenQr} className="hidden" />
+                          </label>
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              if (qrCodigoManual.trim()) procesarTextoQrEscaneado(qrCodigoManual);
+                            }}
+                            className="flex flex-1 gap-1.5"
+                          >
+                            <input
+                              type="text"
+                              value={qrCodigoManual}
+                              onChange={(e) => setQrCodigoManual(e.target.value)}
+                              placeholder="Código o pistola QR (ej. c1)"
+                              className="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold outline-none focus:border-emerald-500"
+                            />
+                            <button
+                              type="submit"
+                              className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-3.5 py-2 rounded-xl text-xs shrink-0"
+                            >
+                              Leer
+                            </button>
+                          </form>
+                        </div>
+
+                        {/* Selector Rápido de Corral (1 toque si hay poca luz en el galpón) */}
+                        <div className="border-t border-slate-100 pt-4">
+                          <div className="flex items-center justify-between mb-2.5">
+                            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                              ¿Poca luz en el galpón? Toca el corral directo:
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                            {listCorrales.map(c => {
+                              const loteC = getLoteActivo(c.id);
+                              const statsC = loteC ? calcularEstadisticasLote(loteC) : null;
+                              const faseNum = loteC ? (loteC.faseActual || CRONOGRAMA_ALIMENTACION.find(f => statsC?.diasLote >= f.diaInicio && statsC?.diasLote <= f.diaFin)?.fase || 1) : null;
+                              const faseObj = faseNum ? CRONOGRAMA_ALIMENTACION.find(f => f.fase === faseNum) : null;
+
+                              return (
+                                <button
+                                  key={`quick-qr-${c.id}`}
+                                  type="button"
+                                  onClick={() => prepararCorralEnModalQr(c)}
+                                  className={`p-3 rounded-xl border text-left transition-all ${
+                                    loteC
+                                      ? 'bg-emerald-50/40 border-emerald-200 hover:border-emerald-500 hover:bg-emerald-50'
+                                      : 'bg-slate-50 border-slate-200 opacity-60 hover:opacity-100'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-extrabold text-xs text-slate-900">{c.nombre}</span>
+                                    <QrCode size={13} className={loteC ? 'text-emerald-600' : 'text-slate-400'} />
+                                  </div>
+                                  {loteC ? (
+                                    <p className="text-[10px] font-bold text-emerald-700 mt-1 truncate">
+                                      E{faseNum} · {faseObj?.alimento || 'Activo'}
+                                    </p>
+                                  ) : (
+                                    <p className="text-[10px] font-semibold text-slate-400 mt-1">Vacío</p>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      /* SUB-VISTA C: CORRAL DETECTADO -> TARJETA DE DESCUENTO EN 1 TOQUE */
+                      <div className="space-y-5 animate-in fade-in duration-200">
+                        <div className="bg-slate-900 text-white p-4 rounded-2xl flex items-center justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="bg-emerald-500 text-slate-950 text-[10px] font-black uppercase px-2 py-0.5 rounded-full">
+                                QR Detectado
+                              </span>
+                              <span className="text-xs text-slate-300 font-bold">
+                                {loteDetectado ? `Día ${contextoTolva?.diasLote} · ${contextoTolva?.cantidadActual} cerdos` : 'Sin lote activo'}
+                              </span>
+                            </div>
+                            <h4 className="text-xl font-black mt-1">{qrCorralDetectado.nombre}</h4>
+                            {loteDetectado && (
+                              <p className="text-xs text-emerald-400 font-bold">
+                                {loteDetectado.nombre || loteDetectado.raza || 'Lote Activo'} · Etapa actual: Fase {contextoTolva?.faseActual} ({contextoTolva?.faseInfo?.alimento})
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQrCorralDetectado(null);
+                              setQrErrorMensaje('');
+                            }}
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold px-3 py-2 rounded-xl border border-slate-700 shrink-0"
+                          >
+                            Cambiar QR
+                          </button>
+                        </div>
+
+                        {!contextoTolva?.tieneLoteActivo ? (
+                          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 text-center space-y-3">
+                            <AlertCircle size={28} className="mx-auto text-amber-500" />
+                            <p className="text-xs font-bold text-amber-900">{contextoTolva?.error}</p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const corral = qrCorralDetectado;
+                                cerrarModalQrTolva();
+                                setCorralSeleccionado(corral);
+                                setVista('corralDetail');
+                              }}
+                              className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold px-4 py-2.5 rounded-xl text-xs"
+                            >
+                              Ir a {qrCorralDetectado.nombre} para Ingresar Lote
+                            </button>
+                          </div>
+                        ) : (
+                          <form onSubmit={handleConfirmarDescuentoQr} className="space-y-4 text-xs font-semibold">
+                            {/* Concentrado y Etapa (Preseleccionados automáticamente según la fase del corral) */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                                  Concentrado a Descargar
+                                </label>
+                                <select
+                                  value={qrTipoAlimento}
+                                  onChange={(e) => setQrTipoAlimento(e.target.value)}
+                                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white font-extrabold text-slate-800 outline-none focus:border-emerald-500"
+                                >
+                                  {listCatAlimentos.map(a => (
+                                    <option key={a.id} value={a.nombre}>
+                                      {a.nombre} ({a.librasPorSaco || 50} lb)
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                                  Etapa Destino
+                                </label>
+                                <select
+                                  value={qrFaseDestino}
+                                  onChange={(e) => {
+                                    const nuevaFase = parseInt(e.target.value, 10);
+                                    setQrFaseDestino(nuevaFase);
+                                    const faseTarget = CRONOGRAMA_ALIMENTACION.find(f => f.fase === nuevaFase);
+                                    if (faseTarget && listCatAlimentos.some(a => a.nombre === faseTarget.alimento)) {
+                                      setQrTipoAlimento(faseTarget.alimento);
+                                    }
+                                  }}
+                                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white font-extrabold text-indigo-700 outline-none focus:border-emerald-500"
+                                >
+                                  {CRONOGRAMA_ALIMENTACION.map(f => (
+                                    <option key={f.fase} value={f.fase}>
+                                      Fase {f.fase} ({f.alimento})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+
+                            {/* Indicador de Stock en Bodega Central */}
+                            <div className={`p-3 rounded-xl border flex items-center justify-between ${
+                              stockDisponibleLbs <= 0 || stockInsuficientePreview
+                                ? 'bg-rose-50 border-rose-200 text-rose-800'
+                                : 'bg-emerald-50/60 border-emerald-200 text-emerald-900'
+                            }`}>
+                              <span className="font-bold">Disponible en Bodega ({qrTipoAlimento}):</span>
+                              <span className="font-black text-sm">
+                                {stockDisponibleSacos.toFixed(2)} sacos ({stockDisponibleLbs.toFixed(0)} lb)
+                              </span>
+                            </div>
+
+                            {/* Botones grandes de 1 toque para elegir cantidad de sacos */}
+                            <div>
+                              <label className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-2">
+                                Cantidad Rápida (1 Toque)
+                              </label>
+                              <div className="grid grid-cols-4 gap-2">
+                                {[
+                                  { label: '½ Saco', cant: '0.5', lbs: lbsPorSacoSel * 0.5 },
+                                  { label: '1 Saco', cant: '1', lbs: lbsPorSacoSel * 1 },
+                                  { label: '2 Sacos', cant: '2', lbs: lbsPorSacoSel * 2 },
+                                  { label: '3 Sacos', cant: '3', lbs: lbsPorSacoSel * 3 }
+                                ].map(btn => {
+                                  const activo = qrUnidad === 'sacos' && Number(qrCantidad) === Number(btn.cant);
+                                  return (
+                                    <button
+                                      key={btn.label}
+                                      type="button"
+                                      onClick={() => {
+                                        setQrUnidad('sacos');
+                                        setQrCantidad(btn.cant);
+                                      }}
+                                      className={`py-3 px-2 rounded-xl border text-center transition-all ${
+                                        activo
+                                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-600/20 font-black'
+                                          : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200 font-bold'
+                                      }`}
+                                    >
+                                      <span className="block text-xs">{btn.label}</span>
+                                      <span className={`block text-[10px] mt-0.5 ${activo ? 'text-emerald-100' : 'text-slate-400'}`}>
+                                        {btn.lbs.toFixed(0)} lb
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Cantidad personalizada y Fecha */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                                  Cantidad Exacta
+                                </label>
+                                <div className="flex border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
+                                  <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    step="0.1"
+                                    min="0.1"
+                                    required
+                                    value={qrCantidad}
+                                    onChange={(e) => setQrCantidad(e.target.value)}
+                                    className="w-1/2 p-2.5 bg-white font-black text-slate-800 outline-none"
+                                  />
+                                  <select
+                                    value={qrUnidad}
+                                    onChange={(e) => setQrUnidad(e.target.value)}
+                                    className="w-1/2 p-2.5 bg-slate-100 border-l border-slate-200 font-bold text-slate-700 outline-none"
+                                  >
+                                    <option value="sacos">Sacos ({lbsPorSacoSel} lb)</option>
+                                    <option value="libras">Libras sueltas</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
+                                  Fecha de Descarga
+                                </label>
+                                <input
+                                  type="date"
+                                  required
+                                  value={qrFecha}
+                                  onChange={(e) => setQrFecha(e.target.value)}
+                                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white font-bold text-slate-800 outline-none"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Resumen antes de confirmar */}
+                            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 flex items-center justify-between">
+                              <div>
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total a Descontar</p>
+                                <p className="text-base font-black text-slate-900">
+                                  {librasADescontar.toFixed(1)} lb <span className="text-xs font-bold text-slate-500">({sacosADescontar.toFixed(2)} sacos)</span>
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Costo Imputado</p>
+                                <p className="text-base font-black text-emerald-700">{formatearMoneda(costoEstimadoQr)}</p>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2.5">
+                              <button
+                                type="button"
+                                onClick={(e) => handleConfirmarDescuentoQr(e, { continuarRonda: true })}
+                                disabled={stockInsuficientePreview || cantNumerica <= 0 || qrGuardando}
+                                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:text-slate-500 text-white font-black rounded-2xl shadow-lg shadow-emerald-600/20 text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
+                              >
+                                {qrGuardando ? (
+                                  <>
+                                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                                    Guardando descuento...
+                                  </>
+                                ) : stockInsuficientePreview ? (
+                                  <>
+                                    <AlertTriangle size={18} />
+                                    Stock Insuficiente en Bodega
+                                  </>
+                                ) : (
+                                  <>
+                                    <ScanLine size={18} />
+                                    Descontar {librasADescontar.toFixed(0)} lb y Escanear Siguiente
+                                  </>
+                                )}
+                              </button>
+
+                              {!stockInsuficientePreview && (
+                                <button
+                                  type="submit"
+                                  disabled={cantNumerica <= 0 || qrGuardando}
+                                  className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-slate-100 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
+                                >
+                                  <CheckCircle size={15} className="text-emerald-400" />
+                                  Solo descontar en {qrCorralDetectado.nombre} y finalizar
+                                </button>
+                              )}
+                            </div>
+                          </form>
+                        )}
+
+                        {renderLlaveMaestraQr(qrCorralDetectado)}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* MODO 2: RÓTULOS QR PARA IMPRIMIR Y PLASTIFICAR EN CADA CORRAL */}
+                {qrModalModo === 'imprimir' && (
+                  <div className="space-y-4">
+                    <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h4 className="font-extrabold text-sm text-indigo-950">Pliego de Códigos QR por Corral</h4>
+                        <p className="text-[11px] text-indigo-700/80 font-medium mt-0.5">
+                          Descarga el PDF, imprímelo y pégalo en cada tolva. Funciona con la cámara del teléfono o desde el botón Escanear de la app.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={listCorrales.length === 0}
+                        onClick={() => descargarPDF('fichas-qr-corrales-pdf', 'Rotulos_QR_Corrales_Porcicontrol.pdf')}
+                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500 text-white font-extrabold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-md shrink-0 self-start sm:self-auto"
+                      >
+                        <Download size={15} /> Descargar PDF Imprimible
+                      </button>
+                    </div>
+
+                    {listCorrales.length === 0 && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 text-center space-y-1.5">
+                        <AlertCircle size={26} className="mx-auto text-amber-500" />
+                        <p className="text-xs font-bold text-amber-900">Todavía no hay corrales registrados.</p>
+                        <p className="text-[11px] font-semibold text-amber-700">
+                          Crea tus corrales en Configuración y aquí aparecerá un rótulo QR por cada uno.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {listCorrales.map(corral => {
+                        const payload = buildCorralQrPayload(corral, originUrl);
+                        const loteC = getLoteActivo(corral.id);
+                        return (
+                          <div key={`modal-card-qr-${corral.id}`} className="border border-slate-200 rounded-2xl p-4 flex flex-col items-center text-center bg-slate-50/50">
+                            <span className="text-[9px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                              {loteC ? 'Corral Activo' : 'Corral Vacío'}
+                            </span>
+                            <h5 className="font-black text-base text-slate-900 mt-1">{corral.nombre}</h5>
+                            <p className="text-[11px] text-slate-400 font-semibold mb-3">Capacidad: {corral.capacidad} cerdos</p>
+                            <div className="p-2.5 bg-white border border-slate-200 rounded-xl shadow-sm">
+                              <CodigoQrSvg valor={payload} size={136} etiqueta={`Código QR de ${corral.nombre}`} />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQrModalModo('escanear');
+                                prepararCorralEnModalQr(corral);
+                              }}
+                              className="mt-3 w-full py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition-colors"
+                            >
+                              <ScanLine size={13} className="text-emerald-400" /> Probar Descarga en {corral.nombre}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  };
+
   if (!isAppReady) {
     return (
       <div className="h-dvh w-screen flex flex-col items-center justify-center bg-slate-900 text-white">
@@ -7755,6 +9631,7 @@ return (
 
   return (
     <div className="flex h-dvh bg-slate-100 font-sans text-slate-800 overflow-hidden">
+      {renderModalQrTolva()}
       {modalConfirm.visible && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in duration-200">
@@ -7836,6 +9713,15 @@ return (
           </div>
 
           <div className="mt-auto pt-4 border-t border-slate-800/60">
+            {deferredInstallPrompt && (
+              <button
+                type="button"
+                onClick={handleInstalarPwa}
+                className="w-full mb-3 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-extrabold text-xs bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/15 transition-all"
+              >
+                <Smartphone size={16} /> Instalar App en Teléfono
+              </button>
+            )}
             <div className="px-4 py-3 mb-3 bg-slate-900/50 rounded-xl border border-slate-800/60 flex flex-col">
               <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Usuario</span>
               <span className="text-xs text-slate-300 font-semibold truncate mt-0.5">{user.email || 'Google User'}</span>
@@ -7849,29 +9735,97 @@ return (
 
       {/* Main Content */}
       <main className="min-w-0 flex-1 flex flex-col h-dvh overflow-hidden">
-        <header className="bg-white border-b border-slate-100 px-3 py-3 sm:p-4 lg:p-5 flex flex-wrap gap-2 items-center justify-between relative z-10 shadow-[0_2px_15px_rgba(0,0,0,0.015)]">
+        <header className="bg-white border-b border-slate-100 px-3 py-2.5 sm:p-4 lg:p-5 flex flex-wrap gap-2 items-center justify-between relative z-10 shadow-[0_2px_15px_rgba(0,0,0,0.015)] print:hidden">
           <div className="flex items-center min-w-0">
-            <button onClick={() => setIsSidebarOpen(true)} className="mr-3 lg:hidden text-slate-500 hover:text-emerald-600 p-2 bg-slate-50 border border-slate-100 rounded-xl transition-colors shrink-0">
+            <button onClick={() => setIsSidebarOpen(true)} className="mr-2.5 lg:hidden text-slate-500 hover:text-emerald-600 p-2 bg-slate-50 border border-slate-100 rounded-xl transition-colors shrink-0" aria-label="Abrir menú">
               <Menu size={20} />
             </button>
             <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center min-w-0 truncate">
-              {vista === 'hoy' && <><CheckCircle size={18} className="mr-2 text-emerald-600" /> Hoy</>}
-              {vista === 'dashboard' && <><LayoutDashboard size={18} className="mr-2 text-emerald-600" /> Panel Principal</>}
-              {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600" /> Bodega Central</>}
-              {vista === 'calendario' && <><Calendar size={18} className="mr-2 text-emerald-600" /> Calendario</>}
-              {vista === 'corralDetail' && <><Box size={18} className="mr-2 text-emerald-600" /> Control de Corral</>}
-              {vista === 'historial' && <><ClipboardList size={18} className="mr-2 text-indigo-600" /> Historial de Lotes Finalizados</>}
-              {vista === 'reporteHistorial' && <><ClipboardList size={18} className="mr-2 text-indigo-600" /> Visor de Reporte Histórico</>}
-              {vista === 'config' && <><Settings size={18} className="mr-2 text-blue-600" /> Ajustes</>}
-              {vista === 'prepararVenta' && <><Receipt size={18} className="mr-2 text-slate-600" /> Báscula de Venta</>}
-              {vista === 'resumenVenta' && <><PieChart size={18} className="mr-2 text-slate-600" /> Reportes de Venta</>}
-              {vista === 'imprimirFicha' && <><Printer size={18} className="mr-2 text-slate-600" /> Ficha de Trazabilidad</>}
-              {vista === 'finanzasGlobales' && <><DollarSign size={18} className="mr-2 text-emerald-600" /> Finanzas Globales</>}
+              {vista === 'hoy' && <><CheckCircle size={18} className="mr-2 text-emerald-600 shrink-0" /> Hoy</>}
+              {vista === 'dashboard' && <><LayoutDashboard size={18} className="mr-2 text-emerald-600 shrink-0" /> Panel Principal</>}
+              {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600 shrink-0" /> Bodega Central</>}
+              {vista === 'calendario' && <><Calendar size={18} className="mr-2 text-emerald-600 shrink-0" /> Calendario</>}
+              {(vista === 'corralDetail' || vista === 'corral') && <><Box size={18} className="mr-2 text-emerald-600 shrink-0" /> {corralSeleccionado?.nombre || 'Control de Corral'}</>}
+              {vista === 'historial' && <><ClipboardList size={18} className="mr-2 text-indigo-600 shrink-0" /> Historial de Lotes</>}
+              {vista === 'reporteHistorial' && <><ClipboardList size={18} className="mr-2 text-indigo-600 shrink-0" /> Reporte Histórico</>}
+              {vista === 'config' && <><Settings size={18} className="mr-2 text-blue-600 shrink-0" /> Ajustes</>}
+              {vista === 'prepararVenta' && <><Receipt size={18} className="mr-2 text-slate-600 shrink-0" /> Báscula de Venta</>}
+              {vista === 'resumenVenta' && <><PieChart size={18} className="mr-2 text-slate-600 shrink-0" /> Reportes de Venta</>}
+              {vista === 'imprimirFicha' && <><Printer size={18} className="mr-2 text-slate-600 shrink-0" /> Ficha de Trazabilidad</>}
+              {vista === 'finanzasGlobales' && <><DollarSign size={18} className="mr-2 text-emerald-600 shrink-0" /> Finanzas Globales</>}
             </h2>
           </div>
-          <div className="text-[10px] sm:text-xs font-black text-slate-400 uppercase tracking-widest truncate max-w-full">{new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* INDICADOR DE SEÑAL Y COLA OFFLINE DE GALPÓN */}
+            <button
+              type="button"
+              onClick={() => {
+                if (offlineStatus.enLinea && offlineStatus.pendientesCount > 0) {
+                  offlineStatus.sincronizarAhora();
+                } else if (!offlineStatus.enLinea) {
+                  mostrarAlerta(
+                    'Modo Galpón Sin Señal',
+                    offlineStatus.pendientesCount > 0
+                      ? `Tienes ${offlineStatus.pendientesCount} registro(s) guardados de forma segura en este teléfono. Se subirán solos a la nube apenas vuelvas a tener señal.`
+                      : 'Estás sin señal, pero puedes seguir registrando alimento, pesos, bajas o ventas. Todo se guardará en el teléfono y sincronizará al volver la red.'
+                  );
+                }
+              }}
+              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold border flex items-center gap-1.5 transition-all ${
+                !offlineStatus.enLinea
+                  ? 'bg-amber-100 border-amber-300 text-amber-950 shadow-xs'
+                  : offlineStatus.sincronizando
+                    ? 'bg-blue-50 border-blue-200 text-blue-800'
+                    : offlineStatus.pendientesCount > 0
+                      ? 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100'
+                      : 'bg-emerald-50/70 border-emerald-200/70 text-emerald-800'
+              }`}
+              title={
+                !offlineStatus.enLinea
+                  ? 'Sin conexión — guardando datos localmente en el dispositivo'
+                  : offlineStatus.pendientesCount > 0
+                    ? 'Toca para sincronizar cambios pendientes ahora'
+                    : 'Conectado y sincronizado en tiempo real'
+              }
+            >
+              {!offlineStatus.enLinea ? (
+                <>
+                  <WifiOff size={13} className="text-amber-700 shrink-0" />
+                  <span>
+                    Modo Galpón{offlineStatus.pendientesCount > 0 ? ` · ${offlineStatus.pendientesCount}` : ''}
+                  </span>
+                </>
+              ) : offlineStatus.sincronizando ? (
+                <>
+                  <RefreshCw size={13} className="animate-spin text-blue-600 shrink-0" />
+                  <span>Sincronizando...</span>
+                </>
+              ) : offlineStatus.pendientesCount > 0 ? (
+                <>
+                  <RefreshCw size={13} className="text-amber-600 shrink-0" />
+                  <span>Subir ({offlineStatus.pendientesCount})</span>
+                </>
+              ) : (
+                <>
+                  <Wifi size={13} className="text-emerald-600 shrink-0" />
+                  <span className="hidden sm:inline">En línea</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => abrirModalQrTolva(corralSeleccionado || null, 'escanear')}
+              className="hidden sm:flex bg-slate-900 hover:bg-slate-800 active:bg-slate-950 text-white font-extrabold px-3.5 py-2 rounded-xl text-xs items-center gap-1.5 shadow-sm transition-all border border-slate-800"
+              title="Escanear código QR de corral para descontar concentrado en tolva"
+            >
+              <QrCode size={15} className="text-emerald-400" />
+              <span>Escanear Tolva QR</span>
+            </button>
+            <div className="hidden xl:block text-xs font-black text-slate-400 uppercase tracking-widest truncate max-w-full">{new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+          </div>
         </header>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50/50">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50/50 pb-20 lg:pb-0">
           {vista === 'hoy' && renderHoy()}
           {vista === 'dashboard' && renderDashboard()}
           {vista === 'bodega' && renderBodega()}
@@ -7879,7 +9833,7 @@ return (
           {vista === 'laboratorio' && renderLaboratorio()}
           {vista === 'historial' && renderHistorial()}
           {vista === 'config' && renderConfiguracion()}
-          {vista === 'corralDetail' && renderCorralDetail()}
+          {(vista === 'corralDetail' || vista === 'corral') && renderCorralDetail()}
           {vista === 'prepararVenta' && renderPrepararVenta()}
           {vista === 'resumenVenta' && renderResumenVenta()}
           {vista === 'imprimirFicha' && renderFichaCorral()}
@@ -7887,8 +9841,66 @@ return (
           {vista === 'finanzasGlobales' && renderFinanzasGlobales()}
         </div>
 
+        {/* BARRA DE NAVEGACIÓN INFERIOR PARA PULGAR EN MÓVIL (MODO CAMPO) */}
+        <nav
+          aria-label="Navegación rápida móvil"
+          className="lg:hidden print:hidden bg-white/95 backdrop-blur-md border-t border-slate-200 px-2 pt-1.5 pb-[max(0.45rem,env(safe-area-inset-bottom))] grid grid-cols-5 items-end gap-1 z-30 shrink-0 shadow-[0_-4px_20px_rgba(15,23,42,0.06)]"
+        >
+          <button
+            type="button"
+            onClick={() => { setVista('hoy'); setCorralSeleccionado(null); setIsSidebarOpen(false); }}
+            className={`relative flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${vista === 'hoy' ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
+          >
+            <CheckCircle size={20} />
+            <span className="text-[10px] mt-0.5 leading-none">Hoy</span>
+            {accionesDeHoy.filter(a => a.grupo !== 'semana').length > 0 && (
+              <span className="absolute top-0.5 right-3 bg-rose-500 text-white text-[9px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center">
+                {accionesDeHoy.filter(a => a.grupo !== 'semana').length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setVista('dashboard'); setCorralSeleccionado(null); setIsSidebarOpen(false); }}
+            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${['dashboard', 'corralDetail', 'corral', 'prepararVenta'].includes(vista) ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
+          >
+            <LayoutDashboard size={20} />
+            <span className="text-[10px] mt-0.5 leading-none">Corrales</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => abrirModalQrTolva(corralSeleccionado || null, 'escanear')}
+            className="flex flex-col items-center justify-center -mt-4"
+          >
+            <span className="w-12 h-12 rounded-2xl bg-slate-900 active:bg-emerald-600 text-emerald-400 shadow-lg shadow-slate-900/25 border-2 border-white flex items-center justify-center transition-transform active:scale-95">
+              <QrCode size={22} />
+            </span>
+            <span className="text-[10px] font-black text-slate-900 mt-0.5 leading-none">QR Tolva</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setVista('bodega'); setCorralSeleccionado(null); setIsSidebarOpen(false); }}
+            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${vista === 'bodega' ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
+          >
+            <Archive size={20} />
+            <span className="text-[10px] mt-0.5 leading-none">Bodega</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen(true)}
+            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${isSidebarOpen || ['calendario', 'finanzasGlobales', 'historial', 'config'].includes(vista) ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
+          >
+            <Menu size={20} />
+            <span className="text-[10px] mt-0.5 leading-none">Menú</span>
+          </button>
+        </nav>
+
         {/* CHATBOT FLOTANTE IA */}
-        <div className="fixed bottom-3 right-3 sm:bottom-6 sm:right-6 z-50 flex flex-col items-end">
+        <div className="fixed bottom-20 right-3 lg:bottom-6 sm:right-6 z-40 flex flex-col items-end print:hidden">
           {/* Ventana del Chat */}
           {isChatOpen && (
             <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800/80 rounded-2xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.3)] w-[calc(100vw-1.5rem)] sm:w-96 h-[min(620px,78dvh)] sm:h-[500px] max-h-[82dvh] mb-3 sm:mb-4 flex flex-col overflow-hidden animate-in slide-in-from-bottom-5 duration-300">

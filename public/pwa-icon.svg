@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+    <linearGradient id="pig" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <rect x="28" y="28" width="456" height="456" rx="92" fill="none" stroke="#10b981" stroke-opacity="0.25" stroke-width="6" />
+  <!-- Stylized Pig Body & Snout -->
+  <ellipse cx="250" cy="272" rx="132" ry="104" fill="url(#pig)" />
+  <!-- Ears -->
+  <path d="M156 190 L132 132 L198 164 Z" fill="#34d399" />
+  <path d="M312 168 L358 130 L348 194 Z" fill="#34d399" />
+  <!-- Legs -->
+  <rect x="164" y="346" width="34" height="52" rx="14" fill="#10b981" />
+  <rect x="292" y="346" width="34" height="52" rx="14" fill="#10b981" />
+  <!-- Snout -->
+  <ellipse cx="368" cy="278" rx="46" ry="36" fill="#a7f3d0" />
+  <circle cx="354" cy="278" r="7" fill="#064e3b" />
+  <circle cx="382" cy="278" r="7" fill="#064e3b" />
+  <!-- Eye -->
+  <circle cx="308" cy="240" r="10" fill="#090d16" />
+  <!-- Coin slot (ERP / Rentabilidad) -->
+  <rect x="208" y="182" width="68" height="12" rx="6" fill="#090d16" opacity="0.7" />
+  <!-- Tail -->
+  <path d="M120 264 Q88 242 104 220 Q118 204 106 190" fill="none" stroke="#34d399" stroke-width="14" stroke-linecap="round" />
+</svg>

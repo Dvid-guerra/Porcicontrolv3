@@ -44,5 +44,12 @@ export default defineConfig([
     languageOptions: {
       globals: globals.node
     }
+  },
+  {
+    files: ['public/sw.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      globals: globals.serviceworker
+    }
   }
 ]);
