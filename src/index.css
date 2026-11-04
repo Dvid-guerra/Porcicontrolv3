@@ -4,11 +4,21 @@
 
 @layer base {
   html, body {
-    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--font-sans);
     scroll-behavior: smooth;
-    background-color: #f8fafc;
+    background-color: var(--surface);
     min-height: 100%;
     overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1,
+  h2,
+  h3:not(.uppercase) {
+    font-family: var(--font-display);
   }
 
   #root {
@@ -24,6 +34,32 @@
   textarea,
   button {
     font: inherit;
+  }
+
+  button,
+  [role='button'] {
+    touch-action: manipulation;
+  }
+
+  /* Foco visible y consistente para teclado (sin afectar el toque/clic) */
+  :where(button, a, [role='button'], summary):focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 0.75rem;
+  }
+
+  :where(input, select, textarea):focus-visible {
+    outline: none;
+  }
+
+  /* Cifras alineadas en tablas y montos */
+  table,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: var(--primary-soft);
   }
 }
 
@@ -68,6 +104,40 @@
   }
 }
 
+@layer utilities {
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Pestañas deslizables: snap + desvanecido en el borde derecho para indicar que hay más */
+  .tabs-scroll {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tabs-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabs-scroll > * {
+    scroll-snap-align: start;
+  }
+
+  @media (max-width: 1023px) {
+    .tabs-scroll-fade {
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+      mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+    }
+  }
+}
+
 /* Custom Scrollbar Styles for premium feel */
 ::-webkit-scrollbar {
   width: 6px;
@@ -79,10 +149,15 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #c9c5b6;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #857f78;
+}
+
+/* Los íconos de lucide nunca se encogen dentro de botones flex estrechos */
+.lucide {
+  flex-shrink: 0;
 }

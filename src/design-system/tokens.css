@@ -1,0 +1,143 @@
+@import url('https://fonts.googleapis.com/css2?family=Aleo:wght@700;800;900&family=IBM+Plex+Mono:wght@500&family=Montserrat:wght@400;500;600;700;800;900&display=swap');
+/* Porcicontrol — generated from tokens.json */
+:root, [data-theme="light"] {
+  --forest: #2f4f2f;
+  --olive: #6b8e23;
+  --wheat: #c7a24d;
+  --cream: #f2f0e6;
+  --earth: #6b4e2e;
+  --forest-100: #e1e8d6;
+  --forest-200: #c5cfb6;
+  --forest-950: #1a2a1a;
+  --olive-100: #eaf0d4;
+  --olive-800: #4a6417;
+  --wheat-100: #f6edd3;
+  --wheat-700: #8a6c24;
+  --earth-100: #efe6d8;
+  --surface: var(--cream);
+  --surface-raised: #fbfaf5;
+  --surface-sunken: #e8e5d8;
+  --ink: var(--forest-950);
+  --ink-muted: #57534e;
+  --line: #d6d3d1;
+  --line-strong: #78716c;
+  --primary: var(--forest);
+  --primary-hover: #263f26;
+  --on-primary: var(--cream);
+  --primary-soft: var(--forest-100);
+  --on-primary-soft: var(--forest);
+  --focus: var(--olive-800);
+  --accent: var(--olive);
+  --highlight: var(--wheat);
+  --sidebar: var(--forest);
+  --sidebar-ink: var(--cream);
+  --sidebar-muted: var(--forest-200);
+  --sidebar-active: #3e633e;
+  --sidebar-line: #527452;
+  --success: #166534;
+  --success-soft: #dcfce7;
+  --warning: #92400e;
+  --warning-soft: #fef3c7;
+  --danger: #8c2d1f;
+  --danger-soft: #f9e4df;
+  --info: var(--earth);
+  --info-soft: var(--earth-100);
+  --chart-actual: var(--forest);
+  --chart-target: #78716c;
+  --shadow-card: 0 1px 2px rgba(26, 42, 26, 0.06);
+  --shadow-pop: 0 12px 32px rgba(26, 42, 26, 0.22);
+}
+[data-theme="dark"] {
+  --surface: #121712;
+  --surface-raised: #1a211a;
+  --surface-sunken: #0d110d;
+  --ink: #eef0e6;
+  --ink-muted: #b4bcab;
+  --line: #2e382d;
+  --line-strong: #7d8877;
+  --primary: #a9c98a;
+  --primary-hover: #bcd8a0;
+  --on-primary: #132013;
+  --primary-soft: #243224;
+  --on-primary-soft: #c8e0ae;
+  --focus: #c8e0ae;
+  --accent: #93b84a;
+  --highlight: #c7a24d;
+  --sidebar: var(--forest);
+  --sidebar-ink: var(--cream);
+  --sidebar-muted: var(--forest-200);
+  --sidebar-active: #3e633e;
+  --sidebar-line: #527452;
+  --success: #86efac;
+  --success-soft: #12301d;
+  --warning: #fcd34d;
+  --warning-soft: #33280f;
+  --danger: #fda4af;
+  --danger-soft: #3a161d;
+  --info: #d5b68c;
+  --info-soft: #2c2318;
+  --chart-actual: #a9c98a;
+  --chart-target: #7d8877;
+}
+[data-theme="campo"] {
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #f2f0e6;
+  --ink: #000000;
+  --ink-muted: #1c1917;
+  --line: #57534e;
+  --line-strong: #000000;
+  --primary: var(--forest);
+  --primary-hover: #1a2f1a;
+  --on-primary: #ffffff;
+  --primary-soft: var(--forest-100);
+  --on-primary-soft: #132013;
+  --focus: #000000;
+  --accent: var(--olive-800);
+  --highlight: var(--wheat-700);
+  --sidebar: var(--forest);
+  --sidebar-ink: #ffffff;
+  --sidebar-muted: #ffffff;
+  --sidebar-active: #1a2f1a;
+  --sidebar-line: #ffffff;
+  --success: #14532d;
+  --success-soft: #ffffff;
+  --warning: #78350f;
+  --warning-soft: #ffffff;
+  --danger: #881337;
+  --danger-soft: #ffffff;
+  --info: #4a3418;
+  --info-soft: #ffffff;
+  --chart-actual: #000000;
+  --chart-target: #57534e;
+}
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+  --control-sm: 32px;
+  --control-md: 40px;
+  --control-field: 56px;
+  --sidebar-width: 248px;
+  --topbar-height: 56px;
+  --font-display: Aleo, Georgia, serif;
+  --font-sans: Montserrat, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+.type-display { font-family: var(--font-display); font-size: 40px; line-height: 44px; font-weight: 700; letter-spacing: -0.01em; }
+.type-title { font-family: var(--font-display); font-size: 24px; line-height: 30px; font-weight: 700; }
+.type-heading { font-family: var(--font-display); font-size: 17px; line-height: 24px; font-weight: 700; }
+.type-body { font-family: var(--font-sans); font-size: 14px; line-height: 20px; font-weight: 500; }
+.type-strong { font-family: var(--font-sans); font-size: 14px; line-height: 20px; font-weight: 700; }
+.type-small { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 500; }
+.type-label { font-family: var(--font-sans); font-size: 11px; line-height: 16px; font-weight: 700; letter-spacing: 0.08em; }
+.type-kpi { font-family: var(--font-mono); font-size: 30px; line-height: 36px; font-weight: 500; letter-spacing: -0.03em; }
+.type-data-lg { font-family: var(--font-mono); font-size: 17px; line-height: 24px; font-weight: 500; }
+.type-data { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 500; }

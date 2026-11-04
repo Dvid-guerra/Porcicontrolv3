@@ -5,10 +5,14 @@ import {
   AlertTriangle, HeartPulse, Receipt, PieChart, Calculator, Leaf, Printer, X, Clock,
   Archive, Box, Package, LayoutDashboard, DollarSign, BookOpen, AlertCircle,
   Beaker, ShoppingCart, FileText, Download, LogOut, Menu, Ban, RotateCcw, QrCode, Camera, ScanLine, Check,
-  Flashlight, FlashlightOff, RefreshCw, Wifi, WifiOff, Smartphone
+  Flashlight, FlashlightOff, RefreshCw, Wifi, WifiOff, Smartphone, MessageCircle, Copy,
+  ArrowLeft, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { calculateLotStatistics, parseLocalDate } from './domain/lotStatistics.js';
+import { PanelPrincipal } from './design-system/PanelPrincipal.jsx';
+import marcaGuerraFarm from './design-system/assets/guerra-farm-marca-sobre-bosque.png';
+import { construirPanelPrincipal } from './design-system/panelData.js';
 import {
   buildCorralQrPayload,
   parseCorralQrPayload,
@@ -49,6 +53,13 @@ import {
   useOfflineSyncStatus,
   ejecutarTransaccionMultiClaveOffline
 } from './hooks/useOfflineCloudSync.js';
+import {
+  construirUrlWhatsApp,
+  formatearParteDiarioWhatsApp,
+  formatearReciboVentaWhatsApp,
+  formatearOrdenCompraWhatsApp,
+  formatearFichaCorralWhatsApp
+} from './domain/whatsappReports.js';
 
 // --- IMPORTACIONES DE FIREBASE NUBE ---
 import { initializeApp } from 'firebase/app';
@@ -103,6 +114,53 @@ if (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY) {
 
 const googleProvider = new GoogleAuthProvider();
 const globalAppId = typeof __app_id !== 'undefined' ? __app_id : 'agrocontrol-local';
+
+// --- NAVEGACIÓN (una sola fuente para sidebar, header y barra inferior) ---
+const SECCIONES_NAV = [
+  {
+    titulo: 'Operaciones',
+    items: [
+      { id: 'hoy', label: 'Hoy', icon: CheckCircle, activoEn: ['hoy'] },
+      { id: 'dashboard', label: 'Panel principal', icon: LayoutDashboard, activoEn: ['dashboard', 'corralDetail', 'corral', 'prepararVenta', 'resumenVenta', 'imprimirFicha'] },
+      { id: 'bodega', label: 'Bodega central', icon: Archive, activoEn: ['bodega'] },
+      { id: 'finanzasGlobales', label: 'Finanzas globales', icon: DollarSign, activoEn: ['finanzasGlobales'] },
+      { id: 'calendario', label: 'Calendario', icon: Calendar, activoEn: ['calendario'] }
+    ]
+  },
+  {
+    titulo: 'Administración',
+    items: [
+      { id: 'historial', label: 'Historial de lotes', icon: ClipboardList, activoEn: ['historial', 'reporteHistorial'] },
+      { id: 'config', label: 'Ajustes y fórmulas', icon: Settings, activoEn: ['config', 'laboratorio'] }
+    ]
+  }
+];
+
+const TITULOS_VISTA = {
+  hoy: { label: 'Hoy', icon: CheckCircle },
+  dashboard: { label: 'Panel principal', icon: LayoutDashboard },
+  bodega: { label: 'Bodega central', icon: Archive },
+  calendario: { label: 'Calendario', icon: Calendar },
+  laboratorio: { label: 'Laboratorio de mezclas', icon: Beaker },
+  historial: { label: 'Historial de lotes', icon: ClipboardList },
+  reporteHistorial: { label: 'Reporte histórico', icon: ClipboardList },
+  config: { label: 'Ajustes', icon: Settings },
+  prepararVenta: { label: 'Báscula de venta', icon: Scale },
+  resumenVenta: { label: 'Reportes de venta', icon: PieChart },
+  imprimirFicha: { label: 'Ficha de trazabilidad', icon: Printer },
+  finanzasGlobales: { label: 'Finanzas globales', icon: DollarSign }
+};
+
+// Vista a la que regresa el botón "atrás" del encabezado.
+const VISTA_PADRE = {
+  corralDetail: 'dashboard',
+  corral: 'dashboard',
+  prepararVenta: 'corralDetail',
+  resumenVenta: 'corralDetail',
+  imprimirFicha: 'corralDetail',
+  reporteHistorial: 'historial',
+  laboratorio: 'config'
+};
 
 // --- DATOS POR DEFECTO ---
 
@@ -416,7 +474,33 @@ const TablaInventarioBodega = ({ titulo, encabezadoStock = 'Stock', filas, vacio
     {filas.length === 0 ? (
       <p className="py-10 text-center text-slate-400 text-xs">{vacio}</p>
     ) : (
-      <div className="overflow-x-auto">
+      <>
+      <ul className="sm:hidden divide-y divide-slate-100">
+        {filas.map(fila => (
+          <li key={fila.id} className="px-4 py-3.5 flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="font-bold text-slate-800 text-sm leading-snug">{fila.nombre}</p>
+              <p className="text-[11px] text-slate-400 font-semibold mt-0.5">
+                <span className="uppercase tracking-wide">{fila.tipo}</span>
+                {fila.subtitulo && <> · {fila.subtitulo}</>}
+              </p>
+              <p className="text-xs font-bold text-slate-600 mt-1">Valor: {fila.valor}</p>
+            </div>
+            <div className="text-right shrink-0">
+              <span className={`inline-block px-2.5 py-1 rounded-full font-black text-xs whitespace-nowrap ${fila.alerta ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
+                {fila.stock}
+              </span>
+              {fila.notaStock && <p className="text-[10px] text-slate-400 font-semibold mt-1">{fila.notaStock}</p>}
+            </div>
+            {onEliminar && (
+              <button onClick={() => onEliminar(fila.id)} className="text-slate-300 hover:text-rose-500 p-1.5 -mr-1.5 rounded-md transition-colors shrink-0" title="Quitar del catálogo" aria-label={`Quitar ${fila.nombre} del catálogo`}>
+                <Trash2 size={15} />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="hidden sm:block overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50/50 border-b border-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider">
             <tr>
@@ -454,6 +538,7 @@ const TablaInventarioBodega = ({ titulo, encabezadoStock = 'Stock', filas, vacio
           </tbody>
         </table>
       </div>
+      </>
     )}
   </div>
 );
@@ -672,7 +757,58 @@ function Porcicontrol({ user, db, appId }) {
   });
   const [calendarioDiaSeleccionado, setCalendarioDiaSeleccionado] = useState(() => todayIso());
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [sidebarColapsado, setSidebarColapsado] = useState(() => {
+    try { return window.localStorage.getItem('porcicontrol_sidebar_colapsado') === '1'; } catch { return false; }
+  });
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
+  const [whatsappTelefono, setWhatsappTelefono] = useState(() => {
+    try {
+      return window.localStorage.getItem('porci_whatsapp_tel') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [whatsappCopiadoId, setWhatsappCopiadoId] = useState('');
+  const [mostrarPreviewParteHoy, setMostrarPreviewParteHoy] = useState(false);
+
+  const guardarTelefonoWhatsApp = (nuevoTel) => {
+    setWhatsappTelefono(nuevoTel);
+    try {
+      if (nuevoTel.trim()) {
+        window.localStorage.setItem('porci_whatsapp_tel', nuevoTel.trim());
+      } else {
+        window.localStorage.removeItem('porci_whatsapp_tel');
+      }
+    } catch {
+      // Ignorar restricciones de almacenamiento
+    }
+  };
+
+  const enviarPorWhatsApp = (texto, telefonoForzado = undefined) => {
+    if (!texto) return;
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try { navigator.vibrate(40); } catch { /* ignorar */ }
+    }
+    const destino = telefonoForzado !== undefined ? telefonoForzado : whatsappTelefono;
+    const url = construirUrlWhatsApp(texto, destino);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const copiarTextoWhatsApp = async (texto, idBoton = 'general') => {
+    if (!texto) return;
+    try {
+      await navigator.clipboard.writeText(texto);
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        try { navigator.vibrate(35); } catch { /* ignorar */ }
+      }
+      setWhatsappCopiadoId(idBoton);
+      window.setTimeout(() => {
+        setWhatsappCopiadoId((prev) => (prev === idBoton ? '' : prev));
+      }, 2200);
+    } catch {
+      mostrarAlerta('Copiar mensaje', 'No se pudo copiar automáticamente. Usa el botón de Enviar por WhatsApp.');
+    }
+  };
 
   // --- ESTADOS VENTA Y FINANZAS (MODO GALPÓN) ---
   const [ventaPesos, setVentaPesos] = useState([]);
@@ -902,7 +1038,13 @@ function Porcicontrol({ user, db, appId }) {
   }, [circunferenciaCm, longitudCm, constanteSchaeffer]);
 
   // --- FUNCIONES AUXILIARES ---
-  const formatearMoneda = (v) => new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ' }).format(v || 0);
+  // El signo y el monto nunca se separan de línea (word joiner tras el "-" y espacio duro).
+  const formatearMoneda = (v) => new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ' })
+    .format(v || 0)
+    .replace(/ /g, '\u00A0')
+    .replace(/^-/, '-\u2060');
+  // Egresos mostrados en pantalla con signo negativo explícito.
+  const formatearMonedaNeg = (v) => `-\u2060${formatearMoneda(v)}`;
   const getLoteActivo = (corralId) => listLotes.find(l => l.corralId === corralId && l.estado === 'Activo');
 
   const buildAdvancedFarmAiContext = () => {
@@ -4006,18 +4148,104 @@ ${JSON.stringify(contextoGranja)}`;
     ];
     const fecha = new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' });
     const atrasadas = accionesDeHoy.filter(a => a.grupo === 'atrasado').length;
+    const hoyIso = todayIso();
+
+    const lotesActivosHoy = listLotes.filter(l => l.estado === 'Activo');
+    const cerdosVivosHoy = lotesActivosHoy.reduce((acc, l) => acc + (calcularEstadisticasLote(l)?.cantidadActual || 0), 0);
+    const sacosBodegaHoy = inventarioCentral.reduce((acc, item) => acc + (Number(item.stockSacos) || 0), 0);
+
+    const alimentosServidosHoy = listAlimentos.filter(a => a.fecha === hoyIso);
+    const alimentosLbHoy = alimentosServidosHoy.reduce((s, a) => s + (Number(a.cantidadLb) || 0), 0);
+    const pesajesHoy = listPesos.filter(p => p.fecha === hoyIso).length;
+    const bajasHoy = listBajas.filter(b => b.fecha === hoyIso).reduce((s, b) => s + (Number(b.cantidad) || 0), 0);
+    const ventasHoy = listVentasActivas.filter(v => v.fecha === hoyIso);
+    const ventasCabezasHoy = ventasHoy.reduce((s, v) => s + (Number(v.cantidadCerdos) || 0), 0);
+    const ventasTotalHoy = ventasHoy.reduce((s, v) => s + (Number(v.totalVenta) || 0), 0);
+
+    const textoParteDiario = formatearParteDiarioWhatsApp({
+      fechaTexto: fecha,
+      corralesActivos: lotesActivosHoy.length,
+      corralesTotales: listCorrales.length,
+      cerdosVivos: cerdosVivosHoy,
+      sacosBodega: sacosBodegaHoy,
+      acciones: accionesDeHoy,
+      actividadHoy: {
+        alimentosLbHoy,
+        descargasHoy: alimentosServidosHoy.length,
+        pesajesHoy,
+        bajasHoy,
+        ventasCabezasHoy,
+        ventasTotalHoy
+      },
+      ordenCompra: ordenCompraLista
+    });
 
     return (
       <div className="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto animate-in fade-in duration-500">
-        <div className="mb-6">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">{fecha}</p>
-          <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mt-1">
-            {accionesDeHoy.length === 0 ? 'Todo al día' : `${accionesDeHoy.length} ${accionesDeHoy.length === 1 ? 'cosa' : 'cosas'} por hacer`}
-          </h2>
-          {atrasadas > 0 && (
-            <p className="text-sm text-rose-600 font-semibold mt-1">{atrasadas} {atrasadas === 1 ? 'atrasada' : 'atrasadas'}</p>
-          )}
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">{fecha}</p>
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mt-1">
+              {accionesDeHoy.length === 0 ? 'Todo al día' : `${accionesDeHoy.length} ${accionesDeHoy.length === 1 ? 'cosa' : 'cosas'} por hacer`}
+            </h2>
+            {atrasadas > 0 && (
+              <p className="text-sm text-rose-600 font-semibold mt-1">{atrasadas} {atrasadas === 1 ? 'atrasada' : 'atrasadas'}</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => enviarPorWhatsApp(textoParteDiario)}
+              className="col-span-2 justify-center bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow-md shadow-emerald-600/15 flex items-center gap-1.5 transition-all"
+            >
+              <MessageCircle size={16} /> Enviar Parte por WhatsApp
+            </button>
+            <button
+              type="button"
+              onClick={() => copiarTextoWhatsApp(textoParteDiario, 'parte_hoy')}
+              className="justify-center bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold text-xs px-3 py-2.5 rounded-xl flex items-center gap-1.5 transition-colors"
+            >
+              {whatsappCopiadoId === 'parte_hoy' ? <><Check size={14} className="text-emerald-600" /> ¡Copiado!</> : <><Copy size={14} /> Copiar</>}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMostrarPreviewParteHoy(!mostrarPreviewParteHoy)}
+              className="flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs px-3 py-2.5 rounded-xl transition-colors"
+            >
+              {mostrarPreviewParteHoy ? 'Ocultar vista previa' : 'Configurar / Ver'}
+            </button>
+          </div>
         </div>
+
+        {mostrarPreviewParteHoy && (
+          <div className="mb-6 bg-white border border-emerald-200 rounded-2xl p-4 space-y-3.5 shadow-xs animate-in slide-in-from-top-2 duration-200">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-extrabold text-slate-800 text-xs flex items-center gap-1.5">
+                  <MessageCircle size={15} className="text-emerald-600" /> Destinatario Rápido de WhatsApp (Opcional)
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Si ingresas el número del dueño o encargado, abrirá su chat directo. Si lo dejas vacío, WhatsApp te dejará elegir contacto o grupo.
+                </p>
+              </div>
+              <input
+                type="tel"
+                inputMode="tel"
+                value={whatsappTelefono}
+                onChange={(e) => guardarTelefonoWhatsApp(e.target.value)}
+                placeholder="Ej: 5544-3322"
+                className="sm:w-44 px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 bg-slate-50 focus:bg-white outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">Vista previa del mensaje</p>
+              <pre className="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-[11px] font-mono whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+                {textoParteDiario}
+              </pre>
+            </div>
+          </div>
+        )}
 
         {accionesDeHoy.length === 0 ? (
           <div className="bg-emerald-50/50 border border-emerald-200 rounded-2xl p-8 text-center">
@@ -4075,8 +4303,6 @@ ${JSON.stringify(contextoGranja)}`;
   };
 
   const renderDashboard = () => {
-    const totalSacosBodegaCentral = inventarioCentral.reduce((acc, item) => acc + item.stockSacos, 0);
-
     const alertasCambio = listLotes.filter(l => l.estado === 'Activo').map(lote => {
       const corral = listCorrales.find(c => c.id === lote.corralId);
       const stats = calcularEstadisticasLote(lote);
@@ -4109,7 +4335,7 @@ ${JSON.stringify(contextoGranja)}`;
 
       if (faseActual) {
         if (stats.estaListoParaMezclas && !lote.alertaMezclaVista) {
-          return { corralNombre: corral ? corral.nombre : 'Corral', alertaEspecial: true, mensaje: `¡Cerdos listos para suplementación fuerte! Han superado las ${pesoAlertaMezcla} lbs.` };
+          return { tipoAviso: 'mezcla', corralRef: corral, corralNombre: corral ? corral.nombre : 'Corral', alertaEspecial: true, mensaje: `¡Cerdos listos para suplementación fuerte! Han superado las ${pesoAlertaMezcla} lbs.` };
         }
 
         const metaFase = faseActual.consumoTotalLb * stats.cantidadActual;
@@ -4130,6 +4356,8 @@ ${JSON.stringify(contextoGranja)}`;
           const proximaFase = CRONOGRAMA_ALIMENTACION.find(f => f.fase === faseActualNum + 1);
           if (proximaFase) {
             return {
+              tipoAviso: 'cambio',
+              corralRef: corral,
               corralNombre: corral ? corral.nombre : 'Corral',
               alertaEspecial: false,
               proximoAlimento: proximaFase.alimento,
@@ -4158,184 +4386,65 @@ ${JSON.stringify(contextoGranja)}`;
       }))
       .reverse();
     
-    const alertasFinales = [...notifsPushMapeadas, ...alertasCambio];
+    const abrirCorral = (corral) => {
+      if (!corral) return;
+      setCorralSeleccionado(corral);
+      setVista('corralDetail');
+      setTabActiva('resumen');
+    };
+
+    // Las demás alertas de este listado ya llegan por accionesDeHoy.
+    const avisos = alertasCambio
+      .filter(a => a.tipoAviso)
+      .map(a => ({
+        id: `${a.tipoAviso}_${a.corralRef?.id ?? a.corralNombre}`,
+        grupo: 'hoy',
+        severidad: a.tipoAviso === 'cambio' ? 'warning' : 'info',
+        corral: a.corralNombre,
+        titulo: a.tipoAviso === 'cambio' ? `Preparar cambio a ${a.proximoAlimento}` : 'Listo para suplementación',
+        detalle: a.tipoAviso === 'cambio'
+          ? `Alimento de la fase al ${a.porcentaje} %.${a.motivo === 'dias' ? ' La fase está por terminar.' : ''}`
+          : a.mensaje,
+        accion: 'Abrir corral',
+        onAccion: () => abrirCorral(a.corralRef)
+      }));
+
+    const datosPanel = construirPanelPrincipal({
+      lotes: listLotes,
+      corrales: listCorrales,
+      pesos: listPesos,
+      bajas: listBajas,
+      alimentos: listAlimentos,
+      inventario: inventarioCentral,
+      cronograma: CRONOGRAMA_ALIMENTACION,
+      acciones: accionesDeHoy,
+      avisos,
+      actividad: notifsPushMapeadas.slice(0, 5).map((n, i) => ({
+        id: `${i}_${n.titulo}`,
+        titulo: n.titulo,
+        corral: [n.corralNombre, n.loteNombre].filter(Boolean).join(' · '),
+        mensaje: n.mensaje,
+        usuario: n.usuarioNombre,
+        tiempo: n.tiempo
+      })),
+      estadisticasDe: calcularEstadisticasLote,
+      planDe: getPlanInnosure,
+      hoyIso: todayIso(),
+      hoyTexto: new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' }),
+      onVerBodega: () => irAVista('bodega'),
+      onAbrirCorral: (corralId) => abrirCorral(listCorrales.find(c => c.id === corralId))
+    });
 
     return (
-      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 leading-none">Resumen de la Granja</h2>
-            <p className="text-slate-500 text-sm mt-1">Supervisión operativa y métricas en tiempo real.</p>
-          </div>
-        </div>
-
-        {/* Módulos de Indicadores */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:-translate-y-0.5 transition-all duration-300">
-            <div className="flex items-center justify-between mb-4">
-              <div className="p-3 bg-emerald-500/10 text-emerald-600 rounded-xl border border-emerald-500/10"><Box size={20} /></div>
-              <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">Producción</span>
-            </div>
-            <h3 className="text-slate-400 text-xs font-semibold uppercase">Corrales Activos</h3>
-            <p className="text-2xl font-black text-slate-900 mt-1">
-              {listCorrales.filter(c => getLoteActivo(c.id)).length} 
-              <span className="text-sm font-medium text-slate-400"> / {listCorrales.length} corrales</span>
-            </p>
-          </div>
-
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:-translate-y-0.5 transition-all duration-300">
-            <div className="flex items-center justify-between mb-4">
-              <div className="p-3 bg-blue-500/10 text-blue-600 rounded-xl border border-blue-500/10"><TrendingUp size={20} /></div>
-              <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">Población</span>
-            </div>
-            <h3 className="text-slate-400 text-xs font-semibold uppercase">Cerdos en Engorda</h3>
-            <p className="text-2xl font-black text-slate-900 mt-1">
-              {listLotes.filter(l => l.estado === 'Activo').reduce((acc, curr) => {
-                const stats = calcularEstadisticasLote(curr);
-                return acc + (stats?.cantidadActual || 0);
-              }, 0)}
-              <span className="text-sm font-medium text-slate-400"> cabezas</span>
-            </p>
-          </div>
-
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:-translate-y-0.5 transition-all duration-300">
-            <div className="flex items-center justify-between mb-4">
-              <div className="p-3 bg-amber-500/10 text-amber-600 rounded-xl border border-amber-500/10"><Archive size={20} /></div>
-              <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">Bodega</span>
-            </div>
-            <h3 className="text-slate-400 text-xs font-semibold uppercase">Alimento Comercial</h3>
-            <p className="text-2xl font-black text-slate-900 mt-1">
-              {totalSacosBodegaCentral.toFixed(1)} 
-              <span className="text-sm font-medium text-slate-400"> sacos</span>
-            </p>
-          </div>
-
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:-translate-y-0.5 transition-all duration-300">
-            <div className="flex items-center justify-between mb-4">
-              <div className="p-3 bg-rose-500/10 text-rose-600 rounded-xl border border-rose-500/10"><Clock size={20} /></div>
-              <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase">Alertas</span>
-            </div>
-            <h3 className="text-slate-400 text-xs font-semibold uppercase">Requerimientos</h3>
-            {alertasFinales.length > 0 ? (
-              <div className="mt-2 space-y-2 max-h-32 overflow-y-auto pr-1 scrollbar-thin">
-                {alertasFinales.map((alerta, i) => (
-                  <div key={i} className={`text-xs border-l-2 pl-2.5 py-1.5 leading-tight ${alerta.alertaEspecial ? 'border-emerald-500 text-emerald-700 bg-emerald-50/50 rounded-r-xl' : 'border-amber-400 text-amber-700 bg-amber-50/50 rounded-r-xl'}`}>
-                    {alerta.tipoEvento ? (
-                      <span className="font-semibold block">
-                        <span className="font-black text-slate-800 block">{alerta.titulo}</span>
-                        <span className="block">{[alerta.corralNombre, alerta.loteNombre].filter(Boolean).join(' · ') || 'Actividad general'}</span>
-                        <span className="block text-slate-600">{alerta.mensaje}</span>
-                        <span className="block text-[9px] uppercase tracking-wider text-slate-400 mt-1">{[alerta.usuarioNombre && `por ${alerta.usuarioNombre}`, alerta.tiempo].filter(Boolean).join(' · ')}</span>
-                      </span>
-                    ) : alerta.alertaEspecial ? (
-                      <span className="font-semibold">{alerta.corralNombre}: {alerta.mensaje}</span>
-                    ) : (
-                      <span><span className="font-bold text-slate-800">{alerta.corralNombre}:</span> Alimento al {alerta.porcentaje}%. <br /><span className="text-amber-600 font-extrabold text-[9px] uppercase tracking-wider block mt-0.5">Comprar: {alerta.proximoAlimento}</span></span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-2xl font-black text-slate-900 mt-1">0 <span className="text-sm font-medium text-slate-400">pendientes</span></p>
-            )}
-          </div>
-        </div>
-
-        {/* Supervisión de Corrales */}
-        <div className="space-y-4">
-          <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
-            <h3 className="text-lg font-bold text-slate-900">Estado de los Corrales</h3>
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Actualización remota</span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {listCorrales.map(corral => {
-              const lote = getLoteActivo(corral.id);
-              const stats = calcularEstadisticasLote(lote);
-              return (
-                <div 
-                  key={corral.id} 
-                  onClick={() => { setCorralSeleccionado(corral); setVista('corralDetail'); setTabActiva('resumen'); }} 
-                  className={`group cursor-pointer rounded-2xl border transition-all duration-300 p-6 flex flex-col justify-between min-h-[170px] ${
-                    lote 
-                      ? 'border-emerald-500/20 bg-gradient-to-br from-emerald-50/40 to-white hover:border-emerald-500 shadow-sm hover:shadow-md hover:-translate-y-0.5' 
-                      : 'border-dashed border-slate-200 bg-white hover:border-emerald-400/50 hover:bg-slate-50/20'
-                  }`}
-                >
-                  <div>
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h4 className="font-bold text-lg text-slate-900 group-hover:text-emerald-700 transition-colors">{corral.nombre}</h4>
-                        <span className="text-[10px] text-slate-400 font-semibold uppercase block mt-0.5">Capacidad: {corral.capacidad} lechones</span>
-                      </div>
-                      <div className={`px-2.5 py-1 text-[9px] font-extrabold rounded-full tracking-wider uppercase ${
-                        lote 
-                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' 
-                          : 'bg-slate-100 text-slate-400 border border-slate-200'
-                      }`}>
-                        {lote ? 'Ocupado' : 'Vacío'}
-                      </div>
-                    </div>
-
-                    {lote ? (
-                      <div className="space-y-2 text-sm text-slate-600">
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-medium">Cabezas actuales:</span>
-                          <span className="font-bold text-slate-800">{stats?.cantidadActual}</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-slate-400 font-medium">Peso Promedio:</span>
-                          <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                            {stats?.pesoEsEstimado
-                              ? <span title={`Estimado por consumo. Último pesaje real: ${stats.pesoActual.toFixed(1)} lb hace ${stats.diasSinPesaje} días`}>~{stats.pesoParaProyeccion.toFixed(0)} lb</span>
-                              : <>{stats?.pesoActual} lb</>}
-                            {stats?.estaListoParaMezclas && <Leaf size={14} className="text-emerald-500 filter drop-shadow-[0_0_4px_rgba(16,185,129,0.3)] animate-pulse" title="Listo para formulación" />}
-                          </span>
-                        </div>
-
-                        {(stats?.excedeCicloCompleto || stats?.pesajeVencido || stats?.parametrosIncompletos) && (
-                          <div className="flex flex-wrap gap-1.5 pt-1">
-                            {stats.excedeCicloCompleto && (
-                              <span className="bg-rose-100 text-rose-700 border border-rose-200 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wide" title={`Ya consumió ${stats.consumoCicloPorcentaje.toFixed(0)}% del alimento de un ciclo completo`}>
-                                {stats.consumoCicloPorcentaje.toFixed(0)}% del ciclo · ¿vender?
-                              </span>
-                            )}
-                            {stats.pesajeVencido && (
-                              <span className="bg-amber-100 text-amber-700 border border-amber-200 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wide">
-                                {stats.diasSinPesaje} días sin pesar
-                              </span>
-                            )}
-                            {stats.parametrosIncompletos && (
-                              <span className="bg-slate-200 text-slate-600 border border-slate-300 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wide" title="Falta precio de venta o costo del lechón">
-                                Sin parámetros
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="h-16 flex flex-col items-center justify-center text-slate-400/80 border border-dashed border-slate-100 rounded-xl bg-slate-50/20">
-                        <Plus size={18} className="mb-1 text-slate-300 group-hover:text-emerald-500 group-hover:scale-110 transition-all" />
-                        <span className="text-[10px] font-bold uppercase tracking-wider">Ingresar Lote</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {lote && (
-                    <div className="border-t border-slate-100/80 pt-3.5 mt-4 flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Tiempo de engorda:</span>
-                      <span className="font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">{stats?.diasLote} días</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+      <PanelPrincipal
+        datos={datosPanel}
+        onAbrirCorral={(corralId) => abrirCorral(listCorrales.find(c => c.id === corralId))}
+        onVerHoy={() => irAVista('hoy')}
+        onVerCalendario={() => irAVista('calendario')}
+        onCrearLote={() => (listCorrales[0] ? abrirCorral(listCorrales[0]) : irAVista('config'))}
+      />
     );
   };
-
 
   const renderBodega = () => {
     const hoy = todayIso();
@@ -4370,29 +4479,42 @@ ${JSON.stringify(contextoGranja)}`;
     }, {})).filter(item => item.faltanteOperativo > 0 || item.bajoStock);
 
 return (
-      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-5 sm:space-y-8 animate-in fade-in duration-500">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
+            <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
               <Archive className="mr-3 text-amber-500 filter drop-shadow-[0_0_8px_rgba(245,158,11,0.25)]" size={28} /> Bodega Central
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">Alimento, farmacia e insumos en un solo lugar.</p>
           </div>
           {bodegaVistaTab === 'alimento' && (
-            <button onClick={() => descargarPDF('orden-compra-pdf', 'Orden_Compra_Granja.pdf')} className="bg-slate-950 hover:bg-slate-900 text-white font-bold py-2.5 px-5 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center shrink-0 self-start md:self-auto gap-2">
-              <Download size={18} /> Generar Orden de Compra (PDF)
-            </button>
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:self-start md:self-auto">
+              <button
+                type="button"
+                onClick={() => enviarPorWhatsApp(formatearOrdenCompraWhatsApp({
+                  fechaTexto: new Date().toLocaleDateString('es-GT'),
+                  ordenAlimento: ordenCompraLista,
+                  ordenMedica: ordenCompraMedicaSugerida
+                }))}
+                className="justify-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl shadow-md transition-all duration-200 flex items-center shrink-0 gap-2 text-xs sm:text-sm"
+              >
+                <MessageCircle size={17} /> <span className="sm:hidden">WhatsApp</span><span className="hidden sm:inline">Pedir por WhatsApp</span>
+              </button>
+              <button onClick={() => descargarPDF('orden-compra-pdf', 'Orden_Compra_Granja.pdf')} className="justify-center bg-slate-950 hover:bg-slate-900 text-white font-bold py-2.5 px-4 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 flex items-center shrink-0 gap-2 text-xs sm:text-sm">
+                <Download size={17} /> Orden PDF
+              </button>
+            </div>
           )}
         </div>
 
-        <div className="flex gap-2 bg-white p-1.5 rounded-xl border border-slate-100 shadow-sm w-fit">
-          <button type="button" onClick={() => setBodegaVistaTab('alimento')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'alimento' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+        <div className="grid grid-cols-3 sm:flex gap-1 sm:gap-2 bg-white p-1.5 rounded-xl border border-slate-200/70 shadow-sm sm:w-fit">
+          <button type="button" onClick={() => setBodegaVistaTab('alimento')} className={`flex items-center justify-center px-2 sm:px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'alimento' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
             <Wheat size={16} /> Alimento
           </button>
-          <button type="button" onClick={() => setBodegaVistaTab('farmacia')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'farmacia' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+          <button type="button" onClick={() => setBodegaVistaTab('farmacia')} className={`flex items-center justify-center px-2 sm:px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'farmacia' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
             <Syringe size={16} /> Farmacia
           </button>
-          <button type="button" onClick={() => setBodegaVistaTab('insumos')} className={`flex items-center px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'insumos' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+          <button type="button" onClick={() => setBodegaVistaTab('insumos')} className={`flex items-center justify-center px-2 sm:px-5 py-2.5 rounded-lg font-bold text-sm transition-colors gap-2 ${bodegaVistaTab === 'insumos' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
             <Package size={16} /> Insumos
             {inventarioInsumos.filter(i => i.bajoStock).length > 0 && (
               <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${bodegaVistaTab === 'insumos' ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'}`}>
@@ -4476,7 +4598,7 @@ return (
                     <input type="number" name="costoTotal" step="0.01" required className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-slate-50/50 text-sm transition-all" />
                   </div>
                 </div>
-                <button type="submit" className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-black py-3 rounded-xl transition-colors shadow-lg shadow-amber-500/10 mt-2">Registrar Ingreso</button>
+                <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3 rounded-xl transition-colors shadow-lg shadow-emerald-600/10 mt-2">Registrar Ingreso</button>
               </form>
             </div>
 
@@ -4484,19 +4606,19 @@ return (
               <h3 className="font-bold text-md text-slate-800 mb-3.5">Historial de Compras</h3>
               <div className="max-h-64 overflow-y-auto space-y-2.5 pr-1 scrollbar-thin">
                 {[...listCompras].sort((a, b) => new Date(b.fecha) - new Date(a.fecha)).map(c => (
-                  <div key={c.id} className="flex justify-between items-center p-3 bg-slate-50 border border-slate-100 rounded-xl text-sm hover:bg-slate-100/50 transition-colors">
-                    <div>
+                  <div key={c.id} className="flex justify-between items-start gap-2 p-3 bg-slate-50 border border-slate-100 rounded-xl text-sm hover:bg-slate-100/50 transition-colors">
+                    <div className="min-w-0">
                       <p className="font-bold text-slate-800 leading-tight">{c.tipo}</p>
-                      <div className="flex items-center gap-2 mt-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
                         <span className={`text-[8px] px-1.5 py-0.5 rounded font-black tracking-wider uppercase ${c.categoria === 'ingrediente' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
                           {c.categoria === 'ingrediente' ? 'EXTRA' : 'COMERCIAL'}
                         </span>
-                        <span className="text-xs text-slate-400 font-medium">{c.fecha} • {c.sacos} sacos</span>
+                        <span className="text-xs text-slate-400 font-medium whitespace-nowrap">{c.fecha} • {c.sacos} sacos</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="font-bold text-rose-600">-{formatearMoneda(c.costoTotal)}</span>
-                      <button onClick={() => handleEliminarDato('bodega', c.id)} className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg hover:bg-slate-200/50 transition-colors"><Trash2 size={15} /></button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="font-bold text-rose-600 whitespace-nowrap">{formatearMonedaNeg(c.costoTotal)}</span>
+                      <button onClick={() => handleEliminarDato('bodega', c.id)} aria-label="Eliminar compra" className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg hover:bg-slate-200/50 transition-colors"><Trash2 size={15} /></button>
                     </div>
                   </div>
                 ))}
@@ -4507,11 +4629,29 @@ return (
 
           <div className="lg:col-span-8 space-y-8">
             <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] overflow-hidden">
-              <div className="p-5 border-b border-slate-100 bg-slate-900 text-white flex items-center justify-between">
-                <div className="flex items-center"><Box size={18} className="text-emerald-400 mr-2" /><h3 className="font-bold text-md">Inventario Físico en Bodega</h3></div>
-                <span className="text-[10px] text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">Tiempo Real</span>
+              <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-slate-100 bg-slate-900 text-white flex items-center justify-between gap-3">
+                <div className="flex items-center min-w-0"><Box size={18} className="text-emerald-400 mr-2" /><h3 className="font-bold text-sm sm:text-base truncate">Inventario físico en bodega</h3></div>
+                <span className="shrink-0 whitespace-nowrap text-[10px] text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">Tiempo real</span>
               </div>
-              <div className="overflow-x-auto">
+              <ul className="sm:hidden divide-y divide-slate-100">
+                {inventarioCentral.map(item => {
+                  if (item.stockLbs <= 0 && listCompras.filter(c => c.tipo === item.nombre).length === 0) return null;
+                  return (
+                    <li key={item.id} className="px-4 py-3.5 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-800 text-sm leading-snug">{item.nombre}</p>
+                        <p className="text-[11px] text-slate-400 font-semibold mt-0.5">
+                          <span className="uppercase tracking-wide">{item.isConcentrado ? 'Comercial' : 'Extra'}</span> · {item.librasPorSaco} lb/saco · {item.stockLbs.toFixed(1)} lbs
+                        </p>
+                      </div>
+                      <span className={`shrink-0 px-2.5 py-1 rounded-full font-black text-xs whitespace-nowrap ${item.stockSacos <= 2 ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
+                        {item.stockSacos.toFixed(1)} sacos
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="hidden sm:block overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-slate-50/50 border-b border-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider">
                     <tr>
@@ -5185,7 +5325,7 @@ return (
       <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl mx-auto animate-in fade-in duration-500">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2.5 leading-none">
+            <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2.5 leading-none">
               <Calendar size={28} className="text-emerald-500 filter drop-shadow-[0_0_8px_rgba(16,185,129,0.2)]" /> Calendario
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">Qué medicamento le toca a cada corral y cuándo, más vencimientos y cierres estimados.</p>
@@ -5390,7 +5530,7 @@ return (
       <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-8 animate-in fade-in duration-500">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
+            <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
               <Beaker className="mr-3 text-indigo-600 filter drop-shadow-[0_0_8px_rgba(79,70,229,0.25)]" size={28} /> Laboratorio de Mezclas
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">Diseña y prueba recetas virtualmente antes de dárselas a los animales para proyectar su rentabilidad y ahorro.</p>
@@ -5491,10 +5631,10 @@ return (
     const lotesCerrados = listLotes.filter(l => l.state === 'Cerrado' || l.estado === 'Cerrado').sort((a, b) => new Date(b.fechaSalida || 0) - new Date(a.fechaSalida || 0));
 
     return (
-      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-5 sm:space-y-8 animate-in fade-in duration-500">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
+            <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
               <ClipboardList className="mr-3 text-indigo-600 filter drop-shadow-[0_0_8px_rgba(79,70,229,0.25)]" size={28} /> Historial de Lotes Finalizados
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">Consulta los reportes financieros y zootécnicos de las engordas pasadas.</p>
@@ -5524,7 +5664,7 @@ return (
 
               return (
                 <div key={lote.id} className="bg-white rounded-2xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] hover:shadow-lg hover:border-indigo-500/20 transition-all duration-300 overflow-hidden flex flex-col group">
-                  <div className="bg-gradient-to-r from-slate-900 to-slate-800 p-5 text-white flex justify-between items-center border-b border-slate-800">
+                  <div className="bg-slate-900 p-5 text-white flex justify-between items-center border-b border-slate-800">
                     <div>
                       <h4 className="font-extrabold text-base tracking-tight">{corralInfo.nombre}</h4>
                       <p className="text-[11px] text-slate-400 mt-1 font-medium">{fechaIngresoStr} al {fechaSalidaStr}</p>
@@ -5556,7 +5696,7 @@ return (
                   <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex gap-2">
                     <button
                       onClick={() => { setLoteHistorialSeleccionado(lote); setVista('reporteHistorial'); }}
-                      className="flex-1 bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-600 hover:to-violet-700 text-white font-bold py-2.5 rounded-xl transition-all text-xs flex items-center justify-center shadow-sm shadow-indigo-500/10 gap-1.5"
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-xl transition-all text-xs flex items-center justify-center shadow-sm shadow-indigo-500/10 gap-1.5"
                     >
                       <FileText size={14} /> Ver Reporte Final
                     </button>
@@ -5658,8 +5798,8 @@ return (
                   <DollarSign size={18} className="text-emerald-600" /> Resultados Financieros
                 </h3>
                 <div className="space-y-3 text-sm">
-                  <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Costo Acumulado (Insumos):</span><strong className="text-rose-500">-{formatearMoneda(stats.costoInvertidoTotal)}</strong></div>
-                  <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Mano de Obra (Pagado):</span><strong className="text-rose-500">-{formatearMoneda(lote.manoObra)}</strong></div>
+                  <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Costo Acumulado (Insumos):</span><strong className="text-rose-500">{formatearMonedaNeg(stats.costoInvertidoTotal)}</strong></div>
+                  <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Mano de Obra (Pagado):</span><strong className="text-rose-500">{formatearMonedaNeg(lote.manoObra)}</strong></div>
                   <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Ventas Reales Totales:</span><strong className="text-emerald-600">+{formatearMoneda(stats.ingresoRealVentas)}</strong></div>
                   <div className="flex justify-between border-b border-slate-50 pb-1.5"><span className="text-slate-500">Valor Estimado en Vivo:</span><strong className="text-slate-500">{formatearMoneda(stats.ingresoEstimadoVivos)}</strong></div>
                   <div className="flex justify-between"><span className="text-slate-500">Ingresos Totales (Reales + Est.):</span><strong className="text-slate-800">{formatearMoneda(stats.ingresoEstimado)}</strong></div>
@@ -5676,15 +5816,15 @@ return (
     );
   };
   const renderConfiguracion = () => (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-5 sm:space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
         <div>
-          <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
+          <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
             <Settings className="mr-3 text-blue-500 filter drop-shadow-[0_0_8px_rgba(59,130,246,0.25)]" size={28} /> Ajustes del Sistema
           </h2>
           <p className="text-slate-500 text-sm mt-1.5">Administra corrales, catálogo de insumos, fórmulas de mezcla y parámetros matemáticos.</p>
         </div>
-        <div className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 shrink-0 self-start md:self-auto">
+        <div className="max-lg:hidden text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 shrink-0 self-start md:self-auto">
           Configuración Global
         </div>
       </div>
@@ -5737,7 +5877,7 @@ return (
               <input type="number" name="libras" placeholder="Lbs por Saco" required min="1" step="0.1" className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-xs bg-white" />
               <input type="number" step="0.01" name="precio" placeholder="Precio Saco (Q)" required min="0" className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-xs bg-white" />
             </div>
-            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold p-2.5 rounded-lg transition-colors flex items-center justify-center shadow-md text-xs gap-1">
+            <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold p-2.5 rounded-lg transition-colors flex items-center justify-center shadow-md text-xs gap-1">
               <Plus size={16} /> Agregar Concentrado
             </button>
           </form>
@@ -5776,7 +5916,7 @@ return (
               <input type="number" name="libras" placeholder="Lbs por QQ/Saco" required min="1" step="0.1" className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-amber-500 text-xs bg-white" />
               <input type="number" step="0.01" name="precio" placeholder="Precio Insumo (Q)" required min="0" className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-amber-500 text-xs bg-white" />
             </div>
-            <button type="submit" className="bg-amber-600 hover:bg-amber-700 text-white font-bold p-2.5 rounded-lg transition-colors flex items-center justify-center shadow-md text-xs gap-1">
+            <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold p-2.5 rounded-lg transition-colors flex items-center justify-center shadow-md text-xs gap-1">
               <Plus size={16} /> Agregar Ingrediente
             </button>
           </form>
@@ -5827,7 +5967,7 @@ return (
       </div>
 
       {/* SECCIÓN OSCURA: REGLAS ADITIVOS */}
-      <div className="bg-[#090d16] p-4 sm:p-6 lg:p-8 rounded-3xl border border-slate-800/80 shadow-[0_20px_50px_rgba(0,0,0,0.3)] text-slate-200">
+      <div className="bg-emerald-600 p-4 sm:p-6 lg:p-8 rounded-3xl border border-emerald-700 shadow-card text-slate-100">
         <h3 className="font-extrabold text-xl mb-2 flex items-center text-white gap-2.5">
           <BookOpen className="text-emerald-400" size={24} /> Reglas de Aditivos para Mezclas
         </h3>
@@ -5898,7 +6038,7 @@ return (
       </div>
 
       {/* SECCIÓN OSCURA: RECETAS POR ETAPA */}
-      <div className="bg-[#090d16] p-4 sm:p-6 lg:p-8 rounded-3xl border border-slate-800/80 shadow-[0_20px_50px_rgba(0,0,0,0.3)] text-slate-200">
+      <div className="bg-emerald-600 p-4 sm:p-6 lg:p-8 rounded-3xl border border-emerald-700 shadow-card text-slate-100">
         <h3 className="font-extrabold text-xl mb-2 flex items-center text-white gap-2.5">
           <BookOpen className="text-emerald-400" size={24} /> Fórmulas Zootécnicas por Etapa
         </h3>
@@ -6077,31 +6217,57 @@ return (
     };
 
     return (
-      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-100 pb-5">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-5 sm:space-y-8 animate-in fade-in duration-500">
+        <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4 border-b border-slate-200/70 pb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
+            <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
               {corralSeleccionado.nombre}
             </h2>
-            <p className="text-slate-500 text-sm mt-1.5 flex items-center gap-1">
+            <p className="text-slate-500 text-sm lg:mt-1.5 flex items-center gap-1">
               <Users size={16} className="text-slate-400" /> Capacidad Máxima: {corralSeleccionado.capacidad} cerdos
             </p>
           </div>
           {loteActivo && (
-            <div className="flex flex-wrap gap-2.5 justify-end shrink-0 text-xs">
-              <button onClick={handleEliminarLoteActivo} className="bg-rose-50 text-rose-700 hover:bg-rose-600 hover:text-white font-bold py-2.5 px-4 rounded-xl transition-all shadow-sm flex items-center border border-rose-200/50 gap-1.5" title="Eliminar este lote completamente">
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 xl:justify-end shrink-0 text-xs">
+              <button onClick={handleEliminarLoteActivo} className="order-last sm:order-first col-span-2 sm:col-span-1 justify-center bg-white text-rose-600 hover:bg-rose-600 hover:text-white font-bold py-2.5 px-4 rounded-xl transition-colors flex items-center border border-rose-200 gap-1.5" title="Eliminar este lote completamente">
                 <Trash2 size={16} /> Anular Lote
               </button>
-              <button onClick={() => abrirModalQrTolva(corralSeleccionado, 'escanear')} className="bg-slate-900 text-white hover:bg-slate-800 font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center transition-all gap-1.5">
+              <button onClick={() => abrirModalQrTolva(corralSeleccionado, 'escanear')} className="justify-center bg-slate-900 text-white hover:bg-slate-800 font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center transition-colors gap-1.5">
                 <QrCode size={16} className="text-emerald-400" /> Tolva QR
               </button>
-              <button onClick={() => setVista('imprimirFicha')} className="bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center transition-all gap-1.5">
-                <Printer size={16} /> Ficha Trazabilidad
+              <button
+                type="button"
+                onClick={() => {
+                  const faseNum = loteActivo.faseActual || CRONOGRAMA_ALIMENTACION.find(f => stats.diasLote >= f.diaInicio && stats.diasLote <= f.diaFin)?.fase || 1;
+                  const faseObj = CRONOGRAMA_ALIMENTACION.find(f => f.fase === faseNum);
+                  enviarPorWhatsApp(formatearFichaCorralWhatsApp({
+                    corralNombre: corralSeleccionado.nombre,
+                    raza: loteActivo.nombre || loteActivo.raza || 'Estándar',
+                    cantidadActual: stats.cantidadActual,
+                    cantidadVendida: stats.cantidadVendida,
+                    mortalidadPorcentaje: stats.mortalidadPorcentaje,
+                    diasLote: stats.diasLote,
+                    etapaActual: `Etapa ${faseNum}`,
+                    alimentoActual: faseObj?.alimento || 'Concentrado',
+                    pesoPromedioTexto: formatPesoLb(stats),
+                    adg: stats.adg,
+                    fcaTexto: formatFca(stats),
+                    inversionTotal: stats.costoInvertidoTotal,
+                    proximaTarea: proximaTareaSanidad
+                  }));
+                }}
+                className="justify-center bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 font-bold py-2.5 px-3.5 rounded-xl flex items-center transition-colors gap-1.5"
+                title="Compartir estado actual del corral por WhatsApp"
+              >
+                <MessageCircle size={16} className="text-emerald-600" /> WhatsApp
               </button>
-              <button onClick={() => { setTipoReporteImpresion('interno'); setVista('resumenVenta'); }} className="bg-slate-200 text-slate-700 hover:bg-slate-300 font-bold py-2.5 px-4 rounded-xl transition-all shadow-sm flex items-center gap-1.5">
+              <button onClick={() => setVista('imprimirFicha')} className="justify-center bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 font-bold py-2.5 px-4 rounded-xl flex items-center transition-colors gap-1.5">
+                <Printer size={16} /> <span className="sm:hidden">Ficha</span><span className="hidden sm:inline">Ficha Trazabilidad</span>
+              </button>
+              <button onClick={() => { setTipoReporteImpresion('interno'); setVista('resumenVenta'); }} className="justify-center bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 font-bold py-2.5 px-4 rounded-xl transition-colors flex items-center gap-1.5">
                 <PieChart size={16} /> Reporte Final
               </button>
-              <button onClick={prepararVentaLote} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl shadow-lg shadow-emerald-600/10 flex items-center transition-all gap-1.5">
+              <button onClick={prepararVentaLote} className="order-first sm:order-none col-span-2 sm:col-span-1 justify-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 sm:py-2.5 px-4 rounded-xl shadow-md shadow-emerald-600/20 flex items-center transition-colors gap-1.5 text-sm sm:text-xs">
                 <Scale size={16} /> Vender en Báscula
               </button>
             </div>
@@ -6174,36 +6340,38 @@ return (
             </form>
           </div>
         ) : (
-          <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.015)] overflow-hidden">
-            <div className="flex overflow-x-auto border-b border-slate-100 bg-slate-50 scrollbar-thin">
+          <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200/70 shadow-sm overflow-hidden -mx-1 sm:mx-0">
+            <div className="tabs-scroll tabs-scroll-fade gap-1 border-b border-slate-200/70 bg-slate-50/80 px-2 pt-2" role="tablist">
               {[
-                { id: 'resumen', icon: PieChart, label: 'Resumen' },
-                { id: 'cronograma', icon: Clock, label: 'Cronograma' },
-                { id: 'alimento', icon: Wheat, label: 'Alimentación (Tolvas)' },
-                { id: 'peso', icon: Scale, label: 'Control Peso' },
-                { id: 'sanidad', icon: HeartPulse, label: 'Sanidad & Bajas' },
-                { id: 'ventas', icon: Receipt, label: 'Ventas en Báscula' },
-                { id: 'finanzas', icon: Calculator, label: 'Finanzas & Simulación' },
+                { id: 'resumen', icon: PieChart, label: 'Resumen', corto: 'Resumen' },
+                { id: 'cronograma', icon: Clock, label: 'Cronograma', corto: 'Cronograma' },
+                { id: 'alimento', icon: Wheat, label: 'Alimentación (Tolvas)', corto: 'Alimento' },
+                { id: 'peso', icon: Scale, label: 'Control Peso', corto: 'Peso' },
+                { id: 'sanidad', icon: HeartPulse, label: 'Sanidad & Bajas', corto: 'Sanidad' },
+                { id: 'ventas', icon: Receipt, label: 'Ventas en Báscula', corto: 'Ventas' },
+                { id: 'finanzas', icon: Calculator, label: 'Finanzas & Simulación', corto: 'Finanzas' },
               ].map(t => (
-                <button key={t.id} onClick={() => setTabActiva(t.id)} className={`flex items-center px-6 py-4 font-bold text-sm transition-colors border-b-2 shrink-0 ${tabActiva === t.id ? 'border-emerald-500 text-emerald-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}>
-                  {React.createElement(t.icon, { size: 17, className: "mr-2" })} {t.label}
+                <button key={t.id} role="tab" aria-selected={tabActiva === t.id} onClick={() => setTabActiva(t.id)} className={`flex items-center gap-2 px-3.5 sm:px-5 py-3 font-bold text-[13px] sm:text-sm transition-colors border-b-2 rounded-t-xl shrink-0 whitespace-nowrap ${tabActiva === t.id ? 'border-emerald-500 text-emerald-700 bg-white' : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-white/60'}`}>
+                  {React.createElement(t.icon, { size: 16, className: 'shrink-0' })}
+                  <span className="2xl:hidden">{t.corto}</span>
+                  <span className="hidden 2xl:inline">{t.label}</span>
                 </button>
               ))}
             </div>
 
-            <div className="p-4 sm:p-6 lg:p-8 bg-white min-h-[500px]">
+            <div className="p-3 sm:p-6 lg:p-8 bg-white min-h-[500px]">
 
               {/* TAB: RESUMEN */}
               {tabActiva === 'resumen' && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in duration-300">
-                  <div className="bg-blue-50/40 p-6 rounded-2xl border border-blue-100">
-                    <h3 className="font-bold text-lg text-blue-900 mb-6 flex items-center"><Activity size={22} className="mr-2 text-blue-600" /> Rendimiento Zootécnico</h3>
+                  <div className="bg-blue-50/40 p-4 sm:p-6 rounded-2xl border border-blue-100">
+                    <h3 className="font-bold text-lg text-blue-900 mb-4 sm:mb-6 flex items-center"><Activity size={22} className="mr-2 text-blue-600" /> Rendimiento Zootécnico</h3>
                     <div className="space-y-4 text-sm font-semibold text-slate-600">
                       <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Animales Vivos:</span><span className={`font-extrabold text-base ${stats.mortalidadPorcentaje > 5 ? 'text-rose-600' : 'text-slate-800'}`}>{stats.cantidadActual} <span className="text-[10px] font-bold text-slate-400 ml-1">({stats.cantidadVendida} vendidos • {stats.mortalidadPorcentaje.toFixed(1)}% mort.)</span></span></div>
                       <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Días en Engorde:</span><span className="font-extrabold text-base text-slate-800">{stats.diasLote}</span></div>
                       <div className={`flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border ${stats.estaListoParaMezclas ? 'border-emerald-200 bg-emerald-50/50' : 'border-slate-100'}`}>
                         <span className={`${stats.estaListoParaMezclas ? 'text-emerald-800 font-bold' : 'text-slate-500 font-bold'}`}>Peso Promedio Actual:</span>
-                        <span className={`font-black text-xl flex items-center ${stats.estaListoParaMezclas ? 'text-emerald-700 animate-pulse' : 'text-blue-700'}`} title={tituloPesoLb(stats)}>{formatPesoLb(stats)} {stats.estaListoParaMezclas && <Leaf size={18} className="ml-1.5 text-emerald-500" title="¡Listo para Mezclas!" />}</span>
+                        <span className={`font-black text-lg sm:text-xl flex items-center whitespace-nowrap shrink-0 ${stats.estaListoParaMezclas ? 'text-emerald-700 animate-pulse' : 'text-blue-700'}`} title={tituloPesoLb(stats)}>{formatPesoLb(stats)} {stats.estaListoParaMezclas && <Leaf size={18} className="ml-1.5 text-emerald-500" title="¡Listo para Mezclas!" />}</span>
                       </div>
                       {stats.pesoEsEstimado && (
                         <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed font-medium">
@@ -6232,10 +6400,10 @@ return (
                   <div className="bg-emerald-50/40 p-6 rounded-2xl border border-emerald-100">
                     <h3 className="font-bold text-lg text-emerald-950 mb-6 flex items-center"><PiggyBank size={22} className="mr-2 text-emerald-600" /> Inversión a la Fecha</h3>
                     <div className="space-y-4 text-sm font-semibold text-slate-600">
-                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Compra Lechones (Estimado):</span><span className="font-bold text-rose-600">-{formatearMoneda(stats.costoLechones)}</span></div>
-                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Alimentación Suministrada:</span><span className="font-bold text-rose-600">-{formatearMoneda(stats.costoAlimento)}</span></div>
-                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Gastos Sanidad y Operaciones:</span><span className="font-bold text-rose-600">-{formatearMoneda(stats.totalSanidad + stats.totalGastosExtras)}</span></div>
-                      <div className="flex justify-between items-center pt-4 mt-2 border-t border-emerald-200/50"><span className="text-slate-900 font-extrabold text-base">TOTAL INVERTIDO:</span><span className="font-black text-rose-600 text-2xl">-{formatearMoneda(stats.costoInvertidoTotal)}</span></div>
+                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Compra Lechones (Estimado):</span><span className="font-bold text-rose-600">{formatearMonedaNeg(stats.costoLechones)}</span></div>
+                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Alimentación Suministrada:</span><span className="font-bold text-rose-600">{formatearMonedaNeg(stats.costoAlimento)}</span></div>
+                      <div className="flex justify-between items-center"><span className="font-medium text-slate-500">Gastos Sanidad y Operaciones:</span><span className="font-bold text-rose-600">{formatearMonedaNeg(stats.totalSanidad + stats.totalGastosExtras)}</span></div>
+                      <div className="flex justify-between items-center pt-4 mt-2 border-t border-emerald-200/50"><span className="text-slate-900 font-extrabold text-base">TOTAL INVERTIDO:</span><span className="font-black text-rose-600 text-2xl">{formatearMonedaNeg(stats.costoInvertidoTotal)}</span></div>
                     </div>
                   </div>
                 </div>
@@ -6375,7 +6543,7 @@ return (
                                       </div>
                                       <div className="space-y-1 border-t border-emerald-250/20 pt-2 text-[10px] text-slate-500 font-medium">
                                         <div className="flex justify-between"><span>Concentrado Ahorrado:</span><span className="text-emerald-600">+{formatearMoneda(ahorro.valorAhorradoConc)}</span></div>
-                                        <div className="flex justify-between"><span>Insumos Extra (Costo):</span><span className="text-rose-500">-{formatearMoneda(ahorro.costoSups)}</span></div>
+                                        <div className="flex justify-between"><span>Insumos Extra (Costo):</span><span className="text-rose-500">{formatearMonedaNeg(ahorro.costoSups)}</span></div>
                                       </div>
                                       <div className="bg-white px-2.5 py-1.5 rounded-lg border border-emerald-200/50 flex justify-between items-center shadow-sm text-xs mt-2">
                                         <span className="text-emerald-800 font-bold uppercase tracking-wider text-[9px]">Ahorro Neto Real:</span>
@@ -6571,7 +6739,7 @@ return (
                               <Plus size={15} /> Agregar Insumo a Ración
                             </button>
                           </div>
-                          <button type="submit" className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-black rounded-xl transition-colors shadow-lg shadow-amber-500/10 mt-2 uppercase tracking-wider">Registrar Suplementación</button>
+                          <button type="submit" className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl transition-colors shadow-lg shadow-emerald-600/10 mt-2 uppercase tracking-wider">Registrar Suplementación</button>
                         </form>
                       )}
                     </div>
@@ -6655,7 +6823,7 @@ return (
                                     {a.esSuplemento && <span className="text-[10px] text-slate-400 italic block mt-1 leading-snug">({a.detalleMezcla})</span>}
                                   </td>
                                   <td className="p-3.5 text-right font-black text-slate-800">{a.cantidadLb.toFixed(1)} lb</td>
-                                  <td className="p-3.5 text-right text-rose-600">-{formatearMoneda(a.costo)}</td>
+                                  <td className="p-3.5 text-right text-rose-600">{formatearMonedaNeg(a.costo)}</td>
                                   <td className="p-3.5 text-right pr-4"><button onClick={() => handleEliminarDato('alimento', a.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
                                 </tr>
                               ))}
@@ -6764,7 +6932,7 @@ return (
                           >
                             <Plus size={15} /> Sumar a Muestra
                           </button>
-                          <button type="submit" disabled={guardandoPeso} className="py-3 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-black rounded-xl transition-all shadow-lg shadow-blue-600/10 flex items-center justify-center gap-1.5">
+                          <button type="submit" disabled={guardandoPeso} className="py-3 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-black rounded-xl transition-all shadow-lg shadow-blue-600/10 flex items-center justify-center gap-1.5">
                             {guardandoPeso ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <><CheckCircle size={15} /> Guardar Directo</>}
                           </button>
                         </div>
@@ -6797,7 +6965,7 @@ return (
                           </div>
 
                           {pesoSchaefferCalculado !== null && (
-                            <div className="bg-gradient-to-tr from-indigo-600 to-violet-600 text-white p-4 rounded-xl text-center shadow-md shadow-indigo-500/10">
+                            <div className="bg-indigo-600 text-white p-4 rounded-xl text-center shadow-md shadow-indigo-500/10">
                               <p className="text-[9px] font-black uppercase tracking-wider text-indigo-200 mb-1 leading-none">Peso Estimado del Cerdo</p>
                               <p className="text-3xl font-black tracking-tight leading-none">{pesoSchaefferCalculado.toFixed(1)}</p>
                               <p className="text-[10px] text-indigo-200 font-bold mt-1.5">libras</p>
@@ -7040,14 +7208,14 @@ return (
                             {listGastosExtra.filter(g => g.loteId === loteActivo.id).map(g => (
                               <tr key={g.id} className="hover:bg-slate-50/50 transition-colors">
                                 <td className="p-3 pl-4"><p className="font-bold text-slate-800">{g.descripcion}</p><p className="text-[10px] text-slate-400 font-medium mt-0.5">{g.fecha} • Operación</p></td>
-                                <td className="p-3 text-right font-black text-rose-600">-{formatearMoneda(g.monto)}</td>
+                                <td className="p-3 text-right font-black text-rose-600">{formatearMonedaNeg(g.monto)}</td>
                                 <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('gasto', g.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
                               </tr>
                             ))}
                             {listVacunas.filter(v => v.loteId === loteActivo.id).map(v => (
                               <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
                                 <td className="p-3 pl-4"><p className="font-bold text-indigo-900">{v.nombre}</p><p className="text-[10px] text-slate-400 font-medium mt-0.5">{v.fecha} • Tratamiento Médico</p></td>
-                                <td className="p-3 text-right font-black text-rose-600">-{formatearMoneda(v.costo)}</td>
+                                <td className="p-3 text-right font-black text-rose-600">{formatearMonedaNeg(v.costo)}</td>
                                 <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('vacuna', v.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
                               </tr>
                             ))}
@@ -7089,7 +7257,7 @@ return (
                                   </td>
                                   <td className="p-3 text-center font-black text-rose-600 text-sm">{b.cantidad}</td>
                                   <td className="p-3 text-right">
-                                    <p className="font-bold text-rose-600">-{formatearMoneda(perdidaTotalBaja)}</p>
+                                    <p className="font-bold text-rose-600">{formatearMonedaNeg(perdidaTotalBaja)}</p>
                                     <p className="text-[9px] text-slate-450 font-bold mt-0.5">c/u: {formatearMoneda(costoPorCerdoMuerto)}</p>
                                   </td>
                                   <td className="p-3 text-right pr-4"><button onClick={() => handleEliminarDato('baja', b.id)} className="text-slate-300 hover:text-rose-500 p-1 rounded-md transition-colors"><Trash2 size={15} /></button></td>
@@ -7234,12 +7402,31 @@ return (
                                         </button>
                                       </>
                                     ) : (
-                                      <button
-                                        onClick={() => { setVentaAnulandoId(anulandoEsta ? null : venta.id); setMotivoAnulacionVenta(''); }}
-                                        className={`font-bold py-2 px-3 rounded-xl transition-colors flex items-center gap-1.5 border ${anulandoEsta ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-rose-50 border-rose-200/60 text-rose-700 hover:bg-rose-600 hover:text-white hover:border-rose-600'}`}
-                                      >
-                                        {anulandoEsta ? <><X size={14} /> Cancelar</> : <><Ban size={14} /> Anular</>}
-                                      </button>
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => enviarPorWhatsApp(formatearReciboVentaWhatsApp({
+                                            corralNombre: corralSeleccionado.nombre,
+                                            raza: loteActivo.raza || loteActivo.nombre || 'Estándar',
+                                            fecha: venta.fecha,
+                                            cantidadCerdos: cerdos,
+                                            totalLibras: libras,
+                                            precioLibra: Number(venta.precioLibra) || 0,
+                                            totalVenta: Number(venta.totalVenta) || 0,
+                                            pesosIndividuales: pesos
+                                          }))}
+                                          className="bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 font-bold py-2 px-3 rounded-xl transition-colors flex items-center gap-1.5"
+                                          title="Enviar comprobante de báscula por WhatsApp"
+                                        >
+                                          <MessageCircle size={14} /> Recibo WhatsApp
+                                        </button>
+                                        <button
+                                          onClick={() => { setVentaAnulandoId(anulandoEsta ? null : venta.id); setMotivoAnulacionVenta(''); }}
+                                          className={`font-bold py-2 px-3 rounded-xl transition-colors flex items-center gap-1.5 border ${anulandoEsta ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-rose-50 border-rose-200/60 text-rose-700 hover:bg-rose-600 hover:text-white hover:border-rose-600'}`}
+                                        >
+                                          {anulandoEsta ? <><X size={14} /> Cancelar</> : <><Ban size={14} /> Anular</>}
+                                        </button>
+                                      </>
                                     )}
                                   </div>
                                 </div>
@@ -7423,7 +7610,7 @@ return (
                       </div>
                     ) : (
                       <div className="bg-white border border-slate-100 rounded-3xl shadow-[0_8px_30px_rgba(0,0,0,0.015)] overflow-hidden">
-                        <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-4 sm:p-6 lg:p-8 text-white relative">
+                        <div className="bg-slate-900 p-4 sm:p-6 lg:p-8 text-white relative">
                           <h4 className="text-indigo-300 font-black mb-4 uppercase tracking-widest text-[10px] leading-none">Proyección de Cierre Planificada</h4>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                             <div><p className="text-slate-450 text-[10px] font-bold uppercase tracking-wider mb-1 leading-none">Libras Faltantes de Carne</p><p className="text-2xl font-black text-white">{stats.proyeccionLibrasFaltantes.toFixed(0)} lb</p></div>
@@ -7434,15 +7621,15 @@ return (
                         <div className="p-4 sm:p-6 lg:p-8 space-y-4 font-semibold text-slate-600 text-sm">
                           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                             <span className="text-slate-500 font-medium">Inversión actual (lechones, alimento, sanidad):</span>
-                            <span className="font-bold text-slate-800">-{formatearMoneda(stats.costoInvertidoTotal)}</span>
+                            <span className="font-bold text-slate-800">{formatearMonedaNeg(stats.costoInvertidoTotal)}</span>
                           </div>
                           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                             <span className="text-slate-500 font-medium">Mano de obra del ciclo:</span>
-                            <span className="font-bold text-slate-800">-{formatearMoneda(loteActivo.manoObra || 0)}</span>
+                            <span className="font-bold text-slate-800">{formatearMonedaNeg(loteActivo.manoObra || 0)}</span>
                           </div>
                           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                             <span className="text-slate-500 font-medium flex items-center gap-1.5"><AlertTriangle size={15} className="text-amber-500" /> Costo alimento futuro estimado:</span>
-                            <span className="font-bold text-rose-500">-{formatearMoneda(stats.proyeccionCostoFaltante)}</span>
+                            <span className="font-bold text-rose-500">{formatearMonedaNeg(stats.proyeccionCostoFaltante)}</span>
                           </div>
                           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                             <span className="text-slate-900 font-black">Venta Bruta Total Proyectada (A Meta):</span>
@@ -7683,8 +7870,8 @@ return (
 
     return (
       <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-5 animate-in fade-in duration-300">
-        <div className="flex items-center justify-between gap-2">
-          <button onClick={() => setVista('corralDetail')} className="flex items-center text-emerald-600 hover:text-emerald-800 font-bold transition-colors text-xs gap-1 py-1">
+        <div className="flex items-center justify-end lg:justify-between gap-2">
+          <button onClick={() => setVista('corralDetail')} className="max-lg:hidden flex items-center text-emerald-600 hover:text-emerald-800 font-bold transition-colors text-xs gap-1 py-1">
             <ChevronRight size={18} className="rotate-180" /> Volver a {corralSeleccionado?.nombre || 'Corral'}
           </button>
           <span className="text-[10px] font-black uppercase tracking-widest bg-slate-900 text-emerald-400 px-3 py-1 rounded-full">
@@ -7714,31 +7901,31 @@ return (
         )}
 
         {/* CONTADOR EN VIVO DE EMBARQUE */}
-        <div className={`rounded-2xl p-4 border shadow-xs ${progresoEmbarque.excedido ? 'bg-rose-50 border-rose-300' : progresoEmbarque.completo ? 'bg-emerald-50 border-emerald-300' : 'bg-slate-900 text-white border-slate-800'}`}>
+        <div className={`rounded-2xl p-4 border shadow-xs ${progresoEmbarque.excedido ? 'bg-rose-50 border-rose-300' : progresoEmbarque.completado ? 'bg-emerald-50 border-emerald-300' : 'bg-slate-900 text-white border-slate-800'}`}>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
             <div>
-              <p className={`text-[10px] font-black uppercase tracking-widest ${progresoEmbarque.excedido ? 'text-rose-600' : progresoEmbarque.completo ? 'text-emerald-700' : 'text-slate-400'}`}>
+              <p className={`text-[10px] font-black uppercase tracking-widest ${progresoEmbarque.excedido ? 'text-rose-600' : progresoEmbarque.completado ? 'text-emerald-700' : 'text-slate-400'}`}>
                 Control de Carga al Camión
               </p>
-              <p className={`text-lg sm:text-xl font-black mt-0.5 ${progresoEmbarque.excedido ? 'text-rose-900' : progresoEmbarque.completo ? 'text-emerald-950' : 'text-white'}`}>
+              <p className={`text-lg sm:text-xl font-black mt-0.5 ${progresoEmbarque.excedido ? 'text-rose-900' : progresoEmbarque.completado ? 'text-emerald-950' : 'text-white'}`}>
                 Pesados: {progresoEmbarque.pesados} de {progresoEmbarque.vivos} vivos
-                <span className={`ml-2 text-xs font-extrabold ${progresoEmbarque.excedido ? 'text-rose-600' : progresoEmbarque.completo ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                <span className={`ml-2 text-xs font-extrabold ${progresoEmbarque.excedido ? 'text-rose-600' : progresoEmbarque.completado ? 'text-emerald-700' : 'text-emerald-400'}`}>
                   {progresoEmbarque.excedido
                     ? `· ¡Excede por ${progresoEmbarque.pesados - progresoEmbarque.vivos}!`
-                    : progresoEmbarque.completo
+                    : progresoEmbarque.completado
                       ? '· ¡Corral completo!'
-                      : `· Faltan ${progresoEmbarque.faltan}`}
+                      : `· Faltan ${progresoEmbarque.faltantes}`}
                 </span>
               </p>
             </div>
             {ventaPesos.length > 0 && (
-              <div className={`px-3 py-1.5 rounded-xl text-right ${progresoEmbarque.excedido || progresoEmbarque.completo ? 'bg-white/80 text-slate-900' : 'bg-slate-800 text-slate-100'}`}>
+              <div className={`px-3 py-1.5 rounded-xl text-right ${progresoEmbarque.excedido || progresoEmbarque.completado ? 'bg-white/80 text-slate-900' : 'bg-slate-800 text-slate-100'}`}>
                 <span className="block text-[9px] uppercase font-bold opacity-70">Promedio</span>
                 <span className="font-black text-sm">{promedioLb.toFixed(1)} lb/cerdo</span>
               </div>
             )}
           </div>
-          <div className={`w-full h-2.5 rounded-full overflow-hidden ${progresoEmbarque.excedido || progresoEmbarque.completo ? 'bg-white/80' : 'bg-slate-800'}`}>
+          <div className={`w-full h-2.5 rounded-full overflow-hidden ${progresoEmbarque.excedido || progresoEmbarque.completado ? 'bg-white/80' : 'bg-slate-800'}`}>
             <div
               className={`h-full transition-all duration-300 ${progresoEmbarque.excedido ? 'bg-rose-500' : 'bg-emerald-500'}`}
               style={{ width: `${progresoEmbarque.porcentaje}%` }}
@@ -7811,7 +7998,7 @@ return (
                     <button
                       type="button"
                       onClick={() => agregarPesoConfirmadoABascula(alertaPesoSospechoso.pesoRedondeado)}
-                      className="py-3 px-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl text-xs"
+                      className="py-3 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs"
                     >
                       Sí, pesa {alertaPesoSospechoso.pesoRedondeado} lb
                     </button>
@@ -7935,7 +8122,7 @@ return (
 
           <div className="bg-slate-900 p-4 flex flex-col sm:flex-row justify-between items-center rounded-t-2xl gap-3 text-xs">
             <button onClick={() => setVista('corralDetail')} className="text-slate-300 hover:text-white font-bold flex items-center gap-1 transition-colors">
-              <ChevronRight size={18} className="rotate-185 mr-1" /> Volver al Corral
+              <ChevronRight size={18} className="rotate-180 mr-1" /> Volver al Corral
             </button>
 
             <div className="flex bg-slate-800 p-1 rounded-xl border border-slate-700 font-bold">
@@ -7947,7 +8134,33 @@ return (
               </button>
             </div>
 
-            <div className="flex space-x-2 font-bold">
+            <div className="flex flex-wrap gap-2 font-bold">
+              <button
+                type="button"
+                onClick={() => enviarPorWhatsApp(formatearReciboVentaWhatsApp({
+                  corralNombre: corralSeleccionado.nombre,
+                  raza: loteActivo.raza || loteActivo.nombre || 'Estándar',
+                  fecha: ultimaVenta?.fecha || fechaCierre,
+                  cantidadCerdos: ticketCerdos,
+                  totalLibras: ticketLibras,
+                  precioLibra: ticketPrecio,
+                  totalVenta: ticketTotal,
+                  pesosIndividuales: ultimaVenta?.pesosVenta || [],
+                  modoInterno: tipoReporteImpresion === 'interno',
+                  estadisticasInternas: {
+                    diasLote: st.diasLote,
+                    adg: st.adg,
+                    fca: st.fca,
+                    fcaEsConfiable: st.fcaEsConfiable,
+                    consumoTotalLb: st.consumoTotalLb,
+                    inversionTotal: st.costoInvertidoTotal + (loteActivo.manoObra || 0),
+                    utilidadNeta: st.utilidadNeta
+                  }
+                }))}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white py-2 px-3.5 rounded-xl flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <MessageCircle size={15} /> WhatsApp
+              </button>
               <button onClick={() => descargarPDF('documento-pdf', `Reporte_${corralSeleccionado.nombre}.pdf`)} className="bg-slate-700 hover:bg-slate-650 text-white py-2 px-4 rounded-xl flex items-center gap-1.5 transition-colors">
                 <Printer size={15} /> Descargar PDF
               </button>
@@ -8078,13 +8291,13 @@ return (
                   <h3 className="text-sm font-black text-slate-800 border-b border-slate-200 pb-2 mb-3">2. Inversión & Liquidación Financiera</h3>
                   <table className="w-full text-left text-xs border-collapse">
                     <tbody>
-                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500 w-1/2">Compra de Lechones</td><td className="py-1.5 text-right text-rose-600">-{formatearMoneda(st.costoLechones)}</td></tr>
-                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Concentrado Suministrado (Tolvas)</td><td className="py-1.5 text-right text-rose-600">-{formatearMoneda(st.costoAlimentoTolva)}</td></tr>
-                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Suplementos & Aditivos extra</td><td className="py-1.5 text-right text-rose-600">-{formatearMoneda(st.costoAlimentoSuplemento)}</td></tr>
-                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Egresos de Sanidad & Fármacos</td><td className="py-1.5 text-right text-rose-600">-{formatearMoneda(st.totalSanidad)}</td></tr>
-                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Otros Egresos Operativos</td><td className="py-1.5 text-right text-rose-600">-{formatearMoneda(st.totalGastosExtras)}</td></tr>
-                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Mano de Obra Imputada</td><td className="py-1.5 text-right text-rose-600">-{formatearMoneda(loteActivo.manoObra)}</td></tr>
-                      <tr className="bg-rose-50 border border-rose-100 font-bold"><td className="py-2 px-3 text-rose-900">EGRESOS / INVERSIÓN TOTAL</td><td className="py-2 px-3 text-right text-rose-700 font-black">-{formatearMoneda(st.costoInvertidoTotal + loteActivo.manoObra)}</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500 w-1/2">Compra de Lechones</td><td className="py-1.5 text-right text-rose-600">{formatearMonedaNeg(st.costoLechones)}</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Concentrado Suministrado (Tolvas)</td><td className="py-1.5 text-right text-rose-600">{formatearMonedaNeg(st.costoAlimentoTolva)}</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Suplementos & Aditivos extra</td><td className="py-1.5 text-right text-rose-600">{formatearMonedaNeg(st.costoAlimentoSuplemento)}</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Egresos de Sanidad & Fármacos</td><td className="py-1.5 text-right text-rose-600">{formatearMonedaNeg(st.totalSanidad)}</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Otros Egresos Operativos</td><td className="py-1.5 text-right text-rose-600">{formatearMonedaNeg(st.totalGastosExtras)}</td></tr>
+                      <tr className="border-b border-slate-100"><td className="py-1.5 text-slate-500">Mano de Obra Imputada</td><td className="py-1.5 text-right text-rose-600">{formatearMonedaNeg(loteActivo.manoObra)}</td></tr>
+                      <tr className="bg-rose-50 border border-rose-100 font-bold"><td className="py-2 px-3 text-rose-900">EGRESOS / INVERSIÓN TOTAL</td><td className="py-2 px-3 text-right text-rose-700 font-black">{formatearMonedaNeg(st.costoInvertidoTotal + loteActivo.manoObra)}</td></tr>
                       <tr><td className="py-3"></td><td></td></tr>
                       <tr className="border-b border-slate-100"><td className="py-2 text-slate-700 font-bold">Ingresos Reales por Báscula</td><td className="py-2 text-right text-emerald-700 font-black">+{formatearMoneda(st.ingresoRealVentas)}</td></tr>
                       <tr className="border-b border-slate-200"><td className="py-2 text-slate-700 font-bold">Valor Estimado Cerdos en Vivo</td><td className="py-2 text-right text-emerald-700 font-black">+{formatearMoneda(st.ingresoEstimadoVivos)}</td></tr>
@@ -8115,12 +8328,12 @@ return (
                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-4 text-center">Desglose de Costos de Ciclo</h4>
                     <div className="space-y-4 px-2 font-bold text-xs">
                       {[
-                        { label: 'Lechones', value: st.costoLechones, color: '#3b82f6' },
-                        { label: 'Alim. Tolva', value: st.costoAlimentoTolva, color: '#f59e0b' },
-                        { label: 'Suplementos', value: st.costoAlimentoSuplemento, color: '#eab308' },
-                        { label: 'Sanidad', value: st.totalSanidad, color: '#6366f1' },
-                        { label: 'Gastos Extras', value: st.totalGastosExtras, color: '#f43f5e' },
-                        { label: 'Mano de Obra', value: loteActivo.manoObra || 0, color: '#64748b' },
+                        { label: 'Lechones', value: st.costoLechones, color: '#2f4f2f' },
+                        { label: 'Alim. Tolva', value: st.costoAlimentoTolva, color: '#c7a24d' },
+                        { label: 'Suplementos', value: st.costoAlimentoSuplemento, color: '#6b8e23' },
+                        { label: 'Sanidad', value: st.totalSanidad, color: '#6b4e2e' },
+                        { label: 'Gastos Extras', value: st.totalGastosExtras, color: '#a83826' },
+                        { label: 'Mano de Obra', value: loteActivo.manoObra || 0, color: '#96908a' },
                       ].map(gasto => {
                         const porcentaje = totalGastosParaGrafica > 0 ? (gasto.value / totalGastosParaGrafica) * 100 : 0;
                         if (gasto.value <= 0) return null;
@@ -8163,7 +8376,7 @@ return (
                               {a.esSuplemento && <span className="text-[10px] text-slate-400 italic block mt-1 leading-snug">({a.detalleMezcla})</span>}
                             </td>
                             <td className="py-2 px-3 text-right font-black text-slate-800">{a.cantidadLb.toFixed(1)} lb</td>
-                            <td className="py-2 px-3 text-right text-rose-600">-{formatearMoneda(a.costo)}</td>
+                            <td className="py-2 px-3 text-right text-rose-600">{formatearMonedaNeg(a.costo)}</td>
                           </tr>
                         ))}
                         {listAlimentos.filter(a => a.loteId === loteActivo.id).length === 0 && (
@@ -8342,7 +8555,7 @@ return (
         {/* ENCABEZADO */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
+            <h2 className="max-lg:hidden text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900 flex items-center leading-none">
               <DollarSign size={28} className="text-emerald-600 mr-3 filter drop-shadow-[0_0_8px_rgba(16,185,129,0.25)]" /> Finanzas Globales
             </h2>
             <p className="text-slate-500 text-sm mt-1.5">
@@ -8356,7 +8569,7 @@ return (
             >
               <Printer size={16} /> Imprimir reporte completo
             </button>
-            <div className="text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 flex items-center justify-center">
+            <div className="max-lg:hidden text-xs font-bold uppercase tracking-widest text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 flex items-center justify-center">
               Datos consolidados
             </div>
           </div>
@@ -8366,7 +8579,7 @@ return (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 leading-none">Inversión Histórica</p>
-            <p className="text-2xl font-black text-slate-800 leading-tight">{formatearMoneda(totGlobal.inversionTotal)}</p>
+            <p className="text-xl sm:text-2xl font-black tabular-nums break-words text-slate-800 leading-tight">{formatearMoneda(totGlobal.inversionTotal)}</p>
             <div className="mt-3.5 flex flex-wrap gap-1">
               {costItems.filter(c => c.value > 0).map(c => (
                 <span key={c.label} className="text-[9px] font-bold text-slate-500 bg-slate-50 border border-slate-150 px-2 py-0.5 rounded-md">{c.label}</span>
@@ -8376,19 +8589,19 @@ return (
 
           <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 leading-none">Ingresos Brutos</p>
-            <p className="text-2xl font-black text-emerald-600 leading-tight">{formatearMoneda(totGlobal.ingresosBrutos)}</p>
+            <p className="text-xl sm:text-2xl font-black tabular-nums break-words text-emerald-600 leading-tight">{formatearMoneda(totGlobal.ingresosBrutos)}</p>
             <p className="text-xs text-slate-500 mt-2 font-medium">{totGlobal.lbsCarneVendida.toFixed(0)} lbs vendidas</p>
           </div>
 
           <div className={`border rounded-2xl p-5 shadow-[0_8px_30px_rgb(0,0,0,0.015)] ${totGlobal.utilidadRealVentas >= 0 ? 'bg-emerald-50/60 border-emerald-100' : 'bg-rose-50/60 border-rose-100'}`}>
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 leading-none">Utilidad Realizada</p>
-            <p className={`text-2xl font-black leading-tight ${totGlobal.utilidadRealVentas >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{formatearMoneda(totGlobal.utilidadRealVentas)}</p>
+            <p className={`text-xl sm:text-2xl font-black tabular-nums break-words leading-tight ${totGlobal.utilidadRealVentas >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{formatearMoneda(totGlobal.utilidadRealVentas)}</p>
             <p className={`text-xs font-bold mt-2 ${totGlobal.utilidadRealVentas >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>Margen: {margenGlobal.toFixed(1)}%</p>
           </div>
 
           <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_8px_30px_rgb(0,0,0,0.015)]">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 leading-none">Utilidad Estimada</p>
-            <p className={`text-2xl font-black leading-tight ${totGlobal.utilidadNeta >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
+            <p className={`text-xl sm:text-2xl font-black tabular-nums break-words leading-tight ${totGlobal.utilidadNeta >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
               {formatearMoneda(totGlobal.utilidadNeta)}
             </p>
             <p className="text-xs text-slate-500 mt-2 font-medium">Incluye {formatearMoneda(totGlobal.valorEstimadoVivos)} en vivo</p>
@@ -8524,7 +8737,7 @@ return (
                                       <div className="flex justify-between"><span className="text-slate-500">Utilidad Ventas Parciales</span><strong className={r.utilidadVentasParciales >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadVentasParciales)}</strong></div>
                                       <div className="flex justify-between"><span className="text-slate-500">Utilidad Proyectada Restantes</span><strong className={r.utilidadProyectadaRestantes >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadProyectadaRestantes)}</strong></div>
                                       {r.costoPerdidoBajas > 0 && (
-                                        <div className="flex justify-between" title="Lechón más alimento, sanidad y mano de obra que consumieron los animales muertos antes de morir"><span className="text-slate-500">Pérdida por Mortalidad</span><strong className="text-rose-600">-{formatearMoneda(r.costoPerdidoBajas)}</strong></div>
+                                        <div className="flex justify-between" title="Lechón más alimento, sanidad y mano de obra que consumieron los animales muertos antes de morir"><span className="text-slate-500">Pérdida por Mortalidad</span><strong className="text-rose-600">{formatearMonedaNeg(r.costoPerdidoBajas)}</strong></div>
                                       )}
                                       <div className="flex justify-between border-t border-slate-100 pt-2"><span className="text-slate-600 font-bold">Resultado Total del Lote</span><strong className={(r.utilidadVentasParciales + r.utilidadProyectadaRestantes - r.costoPerdidoBajas) >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{formatearMoneda(r.utilidadVentasParciales + r.utilidadProyectadaRestantes - r.costoPerdidoBajas)}</strong></div>
                                     </div>
@@ -8573,7 +8786,7 @@ return (
                                               <td className="py-2 px-3 text-right">{venta.pesoPromedio.toFixed(1)} lb</td>
                                               <td className="py-2 px-3 text-right">Q{venta.precioLibra.toFixed(2)}</td>
                                               <td className="py-2 px-3 text-right font-bold text-emerald-600">{formatearMoneda(venta.totalVenta || 0)}</td>
-                                              <td className="py-2 px-3 text-right font-bold text-amber-600">-{formatearMoneda(venta.costoAsignado)}</td>
+                                              <td className="py-2 px-3 text-right font-bold text-amber-600">{formatearMonedaNeg(venta.costoAsignado)}</td>
                                               <td className={`py-2 px-4 text-right font-black ${venta.utilidadEstimada >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{formatearMoneda(venta.utilidadEstimada)}</td>
                                             </tr>
                                           ))}
@@ -8796,7 +9009,7 @@ return (
                       <div className="flex justify-between"><span>Bajas</span><strong>{r.bajasTotales}</strong></div>
                       <div className="flex justify-between"><span>Peso actual{r.pesoEsEstimado ? ' (est.)' : ''}</span><strong>{r.pesoActual > 0 ? `${r.pesoEsEstimado ? '~' : ''}${r.pesoActual.toFixed(1)} lb` : 'Sin peso'}</strong></div>
                       <div className="flex justify-between"><span>FCA</span><strong>{r.fca > 0 ? `${r.fca.toFixed(2)}${r.fcaEsConfiable ? '' : ' (no confiable)'}` : '—'}</strong></div>
-                      {r.costoPerdidoBajas > 0 && <div className="flex justify-between"><span>Pérdida por mortalidad</span><strong>-{formatearMoneda(r.costoPerdidoBajas)}</strong></div>}
+                      {r.costoPerdidoBajas > 0 && <div className="flex justify-between"><span>Pérdida por mortalidad</span><strong>{formatearMonedaNeg(r.costoPerdidoBajas)}</strong></div>}
                     </div>
                   </div>
                 </div>
@@ -9099,7 +9312,7 @@ return (
                           </div>
                           <div className="flex justify-between">
                             <span className="text-slate-400 font-semibold">Costo cargado al lote:</span>
-                            <span className="font-bold text-rose-600">-{formatearMoneda(qrExitoReciente.costo)}</span>
+                            <span className="font-bold text-rose-600">{formatearMonedaNeg(qrExitoReciente.costo)}</span>
                           </div>
                           <div className="flex justify-between border-t border-slate-100 pt-2">
                             <span className="text-slate-400 font-semibold">Queda en Bodega Central:</span>
@@ -9352,7 +9565,7 @@ return (
                                 setCorralSeleccionado(corral);
                                 setVista('corralDetail');
                               }}
-                              className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold px-4 py-2.5 rounded-xl text-xs"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-4 py-2.5 rounded-xl text-xs"
                             >
                               Ir a {qrCorralDetectado.nombre} para Ingresar Lote
                             </button>
@@ -9621,16 +9834,40 @@ return (
 
   if (!isAppReady) {
     return (
-      <div className="h-dvh w-screen flex flex-col items-center justify-center bg-slate-900 text-white">
-        <PiggyBank size={80} className="text-emerald-400 mb-6 animate-bounce shadow-emerald-500/20 drop-shadow-2xl" />
+      <div className="h-dvh w-screen flex flex-col items-center justify-center bg-sidebar text-sidebar-ink">
+        <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-24 w-auto mb-6" />
         <h2 className="text-3xl font-black">Conectando a la Nube...</h2>
         <p className="text-slate-400 mt-2 font-medium">Sincronizando granja de forma compartida</p>
       </div>
     );
   }
 
+  const pendientesHoyCount = accionesDeHoy.filter(a => a.grupo !== 'semana').length;
+  const irAVista = (id) => {
+    setVista(id);
+    setCorralSeleccionado(null);
+    setIsSidebarOpen(false);
+  };
+  const alternarSidebarColapsado = () => {
+    setSidebarColapsado(prev => {
+      const next = !prev;
+      try { window.localStorage.setItem('porcicontrol_sidebar_colapsado', next ? '1' : '0'); } catch { /* almacenamiento no disponible */ }
+      return next;
+    });
+  };
+  const vistaPadreBase = VISTA_PADRE[vista] || null;
+  const vistaPadre = vistaPadreBase === 'corralDetail' && !corralSeleccionado ? 'dashboard' : vistaPadreBase;
+  const volverAVistaPadre = () => {
+    if (!vistaPadre) return;
+    if (vistaPadre === 'dashboard') setCorralSeleccionado(null);
+    setVista(vistaPadre);
+  };
+  const tituloVistaActual = (vista === 'corralDetail' || vista === 'corral')
+    ? { label: corralSeleccionado?.nombre || 'Control de corral', icon: Box }
+    : (TITULOS_VISTA[vista] || { label: 'Porcicontrol', icon: LayoutDashboard });
+
   return (
-    <div className="flex h-dvh bg-slate-100 font-sans text-slate-800 overflow-hidden">
+    <div className="flex h-dvh bg-slate-50 font-sans text-slate-800 overflow-hidden">
       {renderModalQrTolva()}
       {modalConfirm.visible && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
@@ -9651,111 +9888,154 @@ return (
       {/* Sidebar */}
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 bg-slate-900/50 z-30 lg:hidden backdrop-blur-sm transition-opacity"
+          className="fixed inset-0 bg-slate-950/60 z-30 lg:hidden backdrop-blur-sm animate-in fade-in duration-200"
           onClick={() => setIsSidebarOpen(false)}
         ></div>
       )}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-[min(18rem,86vw)] bg-[#090d16]/95 border-r border-slate-800/80 text-slate-400 flex flex-col shadow-2xl transform transition-transform duration-300 ease-in-out lg:relative lg:w-72 lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="p-6 border-b border-slate-800/80 flex items-center justify-center bg-slate-950/20">
-          <div className="flex items-center space-x-3 text-emerald-400">
-            <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
-              <PiggyBank size={30} className="text-emerald-400 filter drop-shadow-[0_0_6px_rgba(52,211,153,0.3)]" />
-            </div>
-            <div>
-              <h1 className="text-xl font-extrabold tracking-tight text-white leading-none">Porcicontrol</h1>
-              <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-500/70 mt-1">ERP Granja Porcina</p>
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-[min(18rem,86vw)] bg-sidebar text-sidebar-muted flex flex-col lg:shadow-none border-r border-sidebar-line transform transition-[transform,width] duration-300 ease-out lg:relative lg:translate-x-0 print:hidden ${sidebarColapsado ? 'lg:w-[76px]' : 'lg:w-64'} ${isSidebarOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}`}
+        aria-label="Navegación principal"
+      >
+        <div className={`min-h-[64px] lg:h-[68px] shrink-0 flex items-center border-b border-sidebar-line pt-[env(safe-area-inset-top)] lg:pt-0 ${sidebarColapsado ? 'lg:justify-center px-4 lg:px-0' : 'px-4'}`}>
+          <div className="flex items-center gap-3 min-w-0">
+            <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-11 w-auto shrink-0" />
+            <div className={`min-w-0 ${sidebarColapsado ? 'lg:hidden' : ''}`}>
+              <p className="font-display text-[19px] font-bold text-sidebar-ink leading-none">Porcicontrol</p>
+              <p className="text-[10px] font-semibold text-sidebar-muted mt-1 truncate">Guerra Farm</p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen(false)}
+            className="ml-auto lg:hidden p-2 rounded-lg text-sidebar-muted hover:text-sidebar-ink hover:bg-sidebar-active transition-colors"
+            aria-label="Cerrar menú"
+          >
+            <X size={18} />
+          </button>
         </div>
 
-        <nav className="flex-1 p-4 space-y-7 overflow-y-auto mt-4 flex flex-col">
-          <div>
-            <p className="px-4 text-[10px] font-bold uppercase tracking-widest text-slate-600 mb-3">Operaciones</p>
-            <div className="space-y-1.5">
-              <button onClick={() => { setVista('hoy'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'hoy' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <CheckCircle size={18} className="mr-3" /> Hoy
-                {accionesDeHoy.filter(a => a.grupo !== 'semana').length > 0 && (
-                  <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                    {accionesDeHoy.filter(a => a.grupo !== 'semana').length}
-                  </span>
-                )}
-              </button>
-
-              <button onClick={() => { setVista('dashboard'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'dashboard' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <LayoutDashboard size={18} className="mr-3" /> Panel Principal
-              </button>
-
-              <button onClick={() => { setVista('bodega'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'bodega' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <Archive size={18} className="mr-3" /> Bodega Central
-              </button>
-
-              <button onClick={() => { setVista('finanzasGlobales'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'finanzasGlobales' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <DollarSign size={18} className="mr-3" /> Finanzas Globales
-              </button>
-
-              <button onClick={() => { setVista('calendario'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'calendario' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <Calendar size={18} className="mr-3" /> Calendario
-              </button>
+        <nav className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 flex flex-col gap-6 no-scrollbar">
+          {SECCIONES_NAV.map(seccion => (
+            <div key={seccion.titulo}>
+              <p className={`px-3 mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-sidebar-muted ${sidebarColapsado ? 'lg:hidden' : ''}`}>{seccion.titulo}</p>
+              {sidebarColapsado && <div className="hidden lg:block mx-3 mb-2 border-t border-sidebar-line" />}
+              <div className="space-y-1">
+                {seccion.items.map(item => {
+                  const activo = item.activoEn.includes(vista);
+                  const badge = item.id === 'hoy' ? pendientesHoyCount : 0;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => irAVista(item.id)}
+                      title={sidebarColapsado ? item.label : undefined}
+                      aria-current={activo ? 'page' : undefined}
+                      className={`group relative w-full flex items-center gap-3 rounded-xl text-[14px] font-semibold transition-colors duration-150 ${sidebarColapsado ? 'lg:justify-center lg:px-0 px-3 py-2.5' : 'px-3 py-2.5'} ${activo ? 'bg-sidebar-active text-sidebar-ink' : 'text-sidebar-muted hover:text-sidebar-ink hover:bg-sidebar-active'}`}
+                    >
+                      {activo && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-wheat" aria-hidden="true" />}
+                      {React.createElement(item.icon, { size: 18, className: `shrink-0 ${activo ? 'text-sidebar-ink' : 'text-sidebar-muted group-hover:text-sidebar-ink'}` })}
+                      <span className={`truncate ${sidebarColapsado ? 'lg:hidden' : ''}`}>{item.label}</span>
+                      {badge > 0 && (
+                        <span className={`bg-rose-500 text-white text-[10px] font-bold min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center ${sidebarColapsado ? 'ml-auto lg:ml-0 lg:absolute lg:top-1 lg:right-2' : 'ml-auto'}`}>
+                          {badge}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ))}
+        </nav>
 
-          <div>
-            <p className="px-4 text-[10px] font-bold uppercase tracking-widest text-slate-600 mb-3">Administración</p>
-            <div className="space-y-1.5">
-              <button onClick={() => { setVista('historial'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'historial' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <ClipboardList size={18} className="mr-3" /> Historial de Lotes
-              </button>
-
-              <button onClick={() => { setVista('config'); setCorralSeleccionado(null); setIsSidebarOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 font-semibold ${vista === 'config' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border-l-4 border-emerald-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]' : 'hover:bg-slate-800/40 hover:text-slate-200'}`}>
-                <Settings size={18} className="mr-3" /> Ajustes y Fórmulas
-              </button>
+        <div className="shrink-0 border-t border-sidebar-line p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] space-y-2">
+          {deferredInstallPrompt && (
+            <button
+              type="button"
+              onClick={handleInstalarPwa}
+              title="Instalar app en el teléfono"
+              className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-xs bg-wheat hover:bg-cream text-forest-950 transition-colors ${sidebarColapsado ? 'lg:px-0' : 'px-3'}`}
+            >
+              <Smartphone size={16} /> <span className={sidebarColapsado ? 'lg:hidden' : ''}>Instalar app</span>
+            </button>
+          )}
+          <div className={`flex items-center gap-2.5 rounded-xl p-2 bg-sidebar-active ${sidebarColapsado ? 'lg:flex-col lg:p-1.5' : ''}`}>
+            <div className="w-8 h-8 shrink-0 rounded-lg bg-sidebar-active text-sidebar-ink font-bold text-sm flex items-center justify-center uppercase" title={user.email || 'Usuario'}>
+              {(user.email || 'U').charAt(0)}
             </div>
-          </div>
-
-          <div className="mt-auto pt-4 border-t border-slate-800/60">
-            {deferredInstallPrompt && (
-              <button
-                type="button"
-                onClick={handleInstalarPwa}
-                className="w-full mb-3 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-extrabold text-xs bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/15 transition-all"
-              >
-                <Smartphone size={16} /> Instalar App en Teléfono
-              </button>
-            )}
-            <div className="px-4 py-3 mb-3 bg-slate-900/50 rounded-xl border border-slate-800/60 flex flex-col">
-              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Usuario</span>
-              <span className="text-xs text-slate-300 font-semibold truncate mt-0.5">{user.email || 'Google User'}</span>
+            <div className={`min-w-0 flex-1 ${sidebarColapsado ? 'lg:hidden' : ''}`}>
+              <p className="text-[10px] font-semibold text-sidebar-muted leading-none">Sesión iniciada</p>
+              <p className="text-xs text-sidebar-ink font-semibold truncate mt-1">{user.email || 'Usuario de Google'}</p>
             </div>
-            <button onClick={() => signOut(auth)} className="w-full flex items-center justify-center px-4 py-3 rounded-xl transition-all duration-200 font-bold bg-rose-500/10 hover:bg-rose-600 hover:text-slate-950 text-rose-400 border border-rose-500/20">
-              <LogOut size={16} className="mr-2" /> Cerrar Sesión
+            <button
+              type="button"
+              onClick={() => signOut(auth)}
+              className="p-2 rounded-lg text-sidebar-muted hover:text-rose-300 hover:bg-rose-500/10 transition-colors shrink-0"
+              title="Cerrar sesión"
+              aria-label="Cerrar sesión"
+            >
+              <LogOut size={16} />
             </button>
           </div>
-        </nav>
+          <button
+            type="button"
+            onClick={alternarSidebarColapsado}
+            className="hidden lg:flex w-full items-center justify-center gap-2 py-2 rounded-lg text-[11px] font-semibold text-sidebar-muted hover:text-sidebar-ink hover:bg-sidebar-active transition-colors"
+            title={sidebarColapsado ? 'Expandir menú' : 'Contraer menú'}
+          >
+            {sidebarColapsado ? <PanelLeftOpen size={16} /> : <><PanelLeftClose size={16} /> Contraer menú</>}
+          </button>
+        </div>
       </aside>
 
       {/* Main Content */}
       <main className="min-w-0 flex-1 flex flex-col h-dvh overflow-hidden">
-        <header className="bg-white border-b border-slate-100 px-3 py-2.5 sm:p-4 lg:p-5 flex flex-wrap gap-2 items-center justify-between relative z-10 shadow-[0_2px_15px_rgba(0,0,0,0.015)] print:hidden">
-          <div className="flex items-center min-w-0">
-            <button onClick={() => setIsSidebarOpen(true)} className="mr-2.5 lg:hidden text-slate-500 hover:text-emerald-600 p-2 bg-slate-50 border border-slate-100 rounded-xl transition-colors shrink-0" aria-label="Abrir menú">
-              <Menu size={20} />
-            </button>
-            <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center min-w-0 truncate">
-              {vista === 'hoy' && <><CheckCircle size={18} className="mr-2 text-emerald-600 shrink-0" /> Hoy</>}
-              {vista === 'dashboard' && <><LayoutDashboard size={18} className="mr-2 text-emerald-600 shrink-0" /> Panel Principal</>}
-              {vista === 'bodega' && <><Archive size={18} className="mr-2 text-amber-600 shrink-0" /> Bodega Central</>}
-              {vista === 'calendario' && <><Calendar size={18} className="mr-2 text-emerald-600 shrink-0" /> Calendario</>}
-              {(vista === 'corralDetail' || vista === 'corral') && <><Box size={18} className="mr-2 text-emerald-600 shrink-0" /> {corralSeleccionado?.nombre || 'Control de Corral'}</>}
-              {vista === 'historial' && <><ClipboardList size={18} className="mr-2 text-indigo-600 shrink-0" /> Historial de Lotes</>}
-              {vista === 'reporteHistorial' && <><ClipboardList size={18} className="mr-2 text-indigo-600 shrink-0" /> Reporte Histórico</>}
-              {vista === 'config' && <><Settings size={18} className="mr-2 text-blue-600 shrink-0" /> Ajustes</>}
-              {vista === 'prepararVenta' && <><Receipt size={18} className="mr-2 text-slate-600 shrink-0" /> Báscula de Venta</>}
-              {vista === 'resumenVenta' && <><PieChart size={18} className="mr-2 text-slate-600 shrink-0" /> Reportes de Venta</>}
-              {vista === 'imprimirFicha' && <><Printer size={18} className="mr-2 text-slate-600 shrink-0" /> Ficha de Trazabilidad</>}
-              {vista === 'finanzasGlobales' && <><DollarSign size={18} className="mr-2 text-emerald-600 shrink-0" /> Finanzas Globales</>}
-            </h2>
+        <header className="bg-surface border-b border-slate-200/70 px-3 sm:px-5 lg:px-8 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 lg:py-0 lg:h-[68px] flex gap-2 items-center justify-between relative z-20 shrink-0 print:hidden">
+          <div className="flex items-center gap-2 min-w-0">
+            {vistaPadre ? (
+              <button
+                type="button"
+                onClick={volverAVistaPadre}
+                className="w-10 h-10 shrink-0 flex items-center justify-center rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 active:bg-slate-200 transition-colors"
+                aria-label={`Volver a ${TITULOS_VISTA[vistaPadre]?.label || 'atrás'}`}
+                title={`Volver a ${TITULOS_VISTA[vistaPadre]?.label || 'atrás'}`}
+              >
+                <ArrowLeft size={20} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsSidebarOpen(true)}
+                className="lg:hidden w-10 h-10 shrink-0 flex items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 active:bg-slate-200 transition-colors"
+                aria-label="Abrir menú"
+              >
+                <Menu size={20} />
+              </button>
+            )}
+            <div className="min-w-0">
+              <h1 className="lg:hidden text-[17px] font-bold text-slate-900 truncate leading-tight">{tituloVistaActual.label}</h1>
+              <nav aria-label="Ruta" className="hidden lg:flex items-center gap-1.5 text-sm min-w-0">
+                <span className="text-slate-400 font-medium">Porcicontrol</span>
+                {vistaPadre && (
+                  <>
+                    <ChevronRight size={14} className="text-slate-300" />
+                    <button type="button" onClick={volverAVistaPadre} className="text-slate-500 hover:text-emerald-700 font-medium transition-colors truncate">
+                      {vistaPadre === 'corralDetail' ? (corralSeleccionado?.nombre || 'Corral') : TITULOS_VISTA[vistaPadre]?.label}
+                    </button>
+                  </>
+                )}
+                <ChevronRight size={14} className="text-slate-300" />
+                <span className="font-semibold text-slate-900 flex items-center gap-1.5 truncate">
+                  {React.createElement(tituloVistaActual.icon, { size: 16, className: 'shrink-0 text-emerald-600' })}
+                  {tituloVistaActual.label}
+                </span>
+              </nav>
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <span className="hidden 2xl:block text-xs font-semibold text-slate-400 capitalize mr-1">
+              {new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' })}
+            </span>
             {/* INDICADOR DE SEÑAL Y COLA OFFLINE DE GALPÓN */}
             <button
               type="button"
@@ -9771,14 +10051,14 @@ return (
                   );
                 }
               }}
-              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold border flex items-center gap-1.5 transition-all ${
+              className={`h-9 px-2.5 rounded-full text-[11px] font-bold border flex items-center gap-1.5 transition-colors ${
                 !offlineStatus.enLinea
-                  ? 'bg-amber-100 border-amber-300 text-amber-950 shadow-xs'
+                  ? 'bg-amber-100 border-amber-300 text-amber-950'
                   : offlineStatus.sincronizando
                     ? 'bg-blue-50 border-blue-200 text-blue-800'
                     : offlineStatus.pendientesCount > 0
                       ? 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100'
-                      : 'bg-emerald-50/70 border-emerald-200/70 text-emerald-800'
+                      : 'bg-white border-slate-200 text-slate-600'
               }`}
               title={
                 !offlineStatus.enLinea
@@ -9790,25 +10070,29 @@ return (
             >
               {!offlineStatus.enLinea ? (
                 <>
-                  <WifiOff size={13} className="text-amber-700 shrink-0" />
+                  <WifiOff size={14} className="text-amber-700 shrink-0" />
                   <span>
-                    Modo Galpón{offlineStatus.pendientesCount > 0 ? ` · ${offlineStatus.pendientesCount}` : ''}
+                    Sin señal{offlineStatus.pendientesCount > 0 ? ` · ${offlineStatus.pendientesCount}` : ''}
                   </span>
                 </>
               ) : offlineStatus.sincronizando ? (
                 <>
-                  <RefreshCw size={13} className="animate-spin text-blue-600 shrink-0" />
-                  <span>Sincronizando...</span>
+                  <RefreshCw size={14} className="animate-spin text-blue-600 shrink-0" />
+                  <span className="hidden sm:inline">Sincronizando...</span>
                 </>
               ) : offlineStatus.pendientesCount > 0 ? (
                 <>
-                  <RefreshCw size={13} className="text-amber-600 shrink-0" />
+                  <RefreshCw size={14} className="text-amber-600 shrink-0" />
                   <span>Subir ({offlineStatus.pendientesCount})</span>
                 </>
               ) : (
                 <>
-                  <Wifi size={13} className="text-emerald-600 shrink-0" />
+                  <span className="relative hidden sm:flex w-2 h-2 shrink-0" aria-hidden="true">
+                    <span className="absolute inset-0 rounded-full bg-emerald-400 opacity-60 animate-ping"></span>
+                    <span className="relative w-2 h-2 rounded-full bg-emerald-500"></span>
+                  </span>
                   <span className="hidden sm:inline">En línea</span>
+                  <Wifi size={14} className="text-emerald-600 shrink-0 sm:hidden" />
                 </>
               )}
             </button>
@@ -9816,16 +10100,15 @@ return (
             <button
               type="button"
               onClick={() => abrirModalQrTolva(corralSeleccionado || null, 'escanear')}
-              className="hidden sm:flex bg-slate-900 hover:bg-slate-800 active:bg-slate-950 text-white font-extrabold px-3.5 py-2 rounded-xl text-xs items-center gap-1.5 shadow-sm transition-all border border-slate-800"
+              className="hidden lg:flex h-9 bg-slate-900 hover:bg-slate-800 active:bg-slate-950 text-white font-bold px-3.5 rounded-full text-xs items-center gap-2 transition-colors"
               title="Escanear código QR de corral para descontar concentrado en tolva"
             >
               <QrCode size={15} className="text-emerald-400" />
-              <span>Escanear Tolva QR</span>
+              <span>Escanear tolva</span>
             </button>
-            <div className="hidden xl:block text-xs font-black text-slate-400 uppercase tracking-widest truncate max-w-full">{new Date().toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
           </div>
         </header>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50/50 pb-20 lg:pb-0">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50 pb-24 lg:pb-10 overscroll-contain">
           {vista === 'hoy' && renderHoy()}
           {vista === 'dashboard' && renderDashboard()}
           {vista === 'bodega' && renderBodega()}
@@ -9844,63 +10127,59 @@ return (
         {/* BARRA DE NAVEGACIÓN INFERIOR PARA PULGAR EN MÓVIL (MODO CAMPO) */}
         <nav
           aria-label="Navegación rápida móvil"
-          className="lg:hidden print:hidden bg-white/95 backdrop-blur-md border-t border-slate-200 px-2 pt-1.5 pb-[max(0.45rem,env(safe-area-inset-bottom))] grid grid-cols-5 items-end gap-1 z-30 shrink-0 shadow-[0_-4px_20px_rgba(15,23,42,0.06)]"
+          className="lg:hidden print:hidden bg-white/95 backdrop-blur-md border-t border-slate-200/80 px-1.5 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] grid grid-cols-5 items-end z-30 shrink-0"
         >
-          <button
-            type="button"
-            onClick={() => { setVista('hoy'); setCorralSeleccionado(null); setIsSidebarOpen(false); }}
-            className={`relative flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${vista === 'hoy' ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
-          >
-            <CheckCircle size={20} />
-            <span className="text-[10px] mt-0.5 leading-none">Hoy</span>
-            {accionesDeHoy.filter(a => a.grupo !== 'semana').length > 0 && (
-              <span className="absolute top-0.5 right-3 bg-rose-500 text-white text-[9px] font-black min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center">
-                {accionesDeHoy.filter(a => a.grupo !== 'semana').length}
+          {[
+            { id: 'hoy', icon: CheckCircle, label: 'Hoy', activoEn: ['hoy'], badge: pendientesHoyCount },
+            { id: 'dashboard', icon: LayoutDashboard, label: 'Corrales', activoEn: ['dashboard', 'corralDetail', 'corral', 'prepararVenta', 'resumenVenta', 'imprimirFicha'] },
+            null,
+            { id: 'bodega', icon: Archive, label: 'Bodega', activoEn: ['bodega'] },
+          ].map((item, idx) => item ? (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => irAVista(item.id)}
+              aria-current={item.activoEn.includes(vista) ? 'page' : undefined}
+              className={`relative flex flex-col items-center justify-center gap-1 py-1 transition-colors ${item.activoEn.includes(vista) ? 'text-emerald-700' : 'text-slate-500'}`}
+            >
+              <span className={`relative flex items-center justify-center w-14 h-8 rounded-full transition-colors ${item.activoEn.includes(vista) ? 'bg-emerald-100' : ''}`}>
+                {React.createElement(item.icon, { size: 20, strokeWidth: item.activoEn.includes(vista) ? 2.4 : 2 })}
+                {item.badge > 0 && (
+                  <span className="absolute -top-0.5 right-2 bg-rose-500 text-white text-[9px] font-bold min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center ring-2 ring-white">
+                    {item.badge}
+                  </span>
+                )}
               </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setVista('dashboard'); setCorralSeleccionado(null); setIsSidebarOpen(false); }}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${['dashboard', 'corralDetail', 'corral', 'prepararVenta'].includes(vista) ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
-          >
-            <LayoutDashboard size={20} />
-            <span className="text-[10px] mt-0.5 leading-none">Corrales</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => abrirModalQrTolva(corralSeleccionado || null, 'escanear')}
-            className="flex flex-col items-center justify-center -mt-4"
-          >
-            <span className="w-12 h-12 rounded-2xl bg-slate-900 active:bg-emerald-600 text-emerald-400 shadow-lg shadow-slate-900/25 border-2 border-white flex items-center justify-center transition-transform active:scale-95">
-              <QrCode size={22} />
-            </span>
-            <span className="text-[10px] font-black text-slate-900 mt-0.5 leading-none">QR Tolva</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setVista('bodega'); setCorralSeleccionado(null); setIsSidebarOpen(false); }}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${vista === 'bodega' ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
-          >
-            <Archive size={20} />
-            <span className="text-[10px] mt-0.5 leading-none">Bodega</span>
-          </button>
+              <span className={`text-[11px] leading-none ${item.activoEn.includes(vista) ? 'font-bold' : 'font-medium'}`}>{item.label}</span>
+            </button>
+          ) : (
+            <button
+              key={`qr-${idx}`}
+              type="button"
+              onClick={() => abrirModalQrTolva(corralSeleccionado || null, 'escanear')}
+              className="flex flex-col items-center justify-center gap-1 -mt-5"
+              aria-label="Escanear QR de tolva"
+            >
+              <span className="w-14 h-14 rounded-2xl bg-slate-900 active:bg-emerald-700 text-emerald-400 shadow-lg shadow-slate-900/30 ring-4 ring-white flex items-center justify-center transition-transform active:scale-95">
+                <QrCode size={24} />
+              </span>
+              <span className="text-[11px] font-bold text-slate-800 leading-none">Tolva QR</span>
+            </button>
+          ))}
 
           <button
             type="button"
             onClick={() => setIsSidebarOpen(true)}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-colors ${isSidebarOpen || ['calendario', 'finanzasGlobales', 'historial', 'config'].includes(vista) ? 'text-emerald-600 font-extrabold' : 'text-slate-500 font-semibold'}`}
+            className={`flex flex-col items-center justify-center gap-1 py-1 transition-colors ${isSidebarOpen || ['calendario', 'finanzasGlobales', 'historial', 'config', 'reporteHistorial', 'laboratorio'].includes(vista) ? 'text-emerald-700' : 'text-slate-500'}`}
           >
-            <Menu size={20} />
-            <span className="text-[10px] mt-0.5 leading-none">Menú</span>
+            <span className={`flex items-center justify-center w-14 h-8 rounded-full transition-colors ${['calendario', 'finanzasGlobales', 'historial', 'config', 'reporteHistorial', 'laboratorio'].includes(vista) ? 'bg-emerald-100' : ''}`}>
+              <Menu size={20} />
+            </span>
+            <span className="text-[11px] font-medium leading-none">Más</span>
           </button>
         </nav>
-
         {/* CHATBOT FLOTANTE IA */}
-        <div className="fixed bottom-20 right-3 lg:bottom-6 sm:right-6 z-40 flex flex-col items-end print:hidden">
+        <div className={`fixed bottom-[calc(5.75rem+env(safe-area-inset-bottom))] right-3 lg:bottom-6 sm:right-6 lg:right-8 z-40 flex flex-col items-end print:hidden ${vista === 'prepararVenta' && !isChatOpen ? 'max-lg:hidden' : ''}`}>
           {/* Ventana del Chat */}
           {isChatOpen && (
             <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800/80 rounded-2xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.3)] w-[calc(100vw-1.5rem)] sm:w-96 h-[min(620px,78dvh)] sm:h-[500px] max-h-[82dvh] mb-3 sm:mb-4 flex flex-col overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
@@ -9982,7 +10261,8 @@ return (
           {/* Botón Flotante */}
           <button
             onClick={() => setIsChatOpen(!isChatOpen)}
-            className={`${isChatOpen ? 'bg-slate-800 text-white hover:bg-slate-700' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-emerald-500/10 hover:shadow-emerald-500/20'} p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 border border-slate-800/20 flex items-center justify-center`}
+            aria-label={isChatOpen ? 'Cerrar asistente' : 'Abrir asistente de granja'}
+            className={`${isChatOpen ? 'bg-slate-800 text-white hover:bg-slate-700' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-emerald-600/30'} p-3.5 sm:p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 border border-slate-800/20 flex items-center justify-center`}
           >
             {isChatOpen ? <X size={24} /> : <Activity size={24} className="animate-pulse" />}
           </button>
@@ -10053,8 +10333,8 @@ function App() {
 
   if (loading) {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-900 text-white">
-        <PiggyBank size={80} className="text-emerald-400 mb-6 animate-pulse drop-shadow-2xl" />
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-sidebar text-sidebar-ink">
+        <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-24 w-auto mb-6" />
         <h2 className="text-2xl font-bold">Cargando Porcicontrol...</h2>
       </div>
     );
@@ -10063,19 +10343,14 @@ function App() {
   // SI NO HAY USUARIO, MOSTRAMOS LA PANTALLA DE LOGIN HÍBRIDA (DISEÑO PREMIUM GLOW)
   if (!user) {
     return (
-      <div className="min-h-dvh w-full flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950 p-3 sm:p-4 font-sans text-slate-100 relative overflow-hidden">
-        {/* Luces de Fondo Difusas */}
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-emerald-500/10 rounded-full blur-[120px] pointer-events-none"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-teal-500/10 rounded-full blur-[120px] pointer-events-none"></div>
+      <div className="min-h-dvh w-full flex items-center justify-center bg-sidebar p-3 sm:p-4 font-sans text-slate-100 relative overflow-hidden">
 
-        <div className="max-w-md w-full bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 rounded-2xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden animate-in zoom-in-95 duration-500">
-          <div className="p-5 sm:p-8 text-center border-b border-slate-800 bg-slate-950/20 relative">
+        <div className="max-w-md w-full bg-slate-900 border border-sidebar-line rounded-2xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden animate-in zoom-in-95 duration-500">
+          <div className="p-5 sm:p-8 text-center border-b border-sidebar-line bg-sidebar relative">
             <div className="relative z-10 flex flex-col items-center">
-              <div className="bg-gradient-to-tr from-emerald-500/20 to-teal-500/20 p-4 rounded-2xl mb-4 border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
-                <PiggyBank size={48} className="text-emerald-400 filter drop-shadow-[0_0_8px_rgba(52,211,153,0.4)]" />
-              </div>
-              <h1 className="text-3xl font-extrabold tracking-tight text-white leading-none">Porcicontrol</h1>
-              <p className="text-xs font-bold uppercase tracking-widest text-emerald-400 mt-2">ERP Porcino Multiusuario</p>
+              <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-20 w-auto mb-4" />
+              <h1 className="text-3xl font-extrabold tracking-tight text-sidebar-ink leading-none">Porcicontrol</h1>
+              <p className="text-xs font-bold uppercase tracking-widest text-wheat mt-2">Guerra Farm</p>
             </div>
           </div>
 
@@ -10116,7 +10391,7 @@ function App() {
                 />
               </div>
 
-              <button type="submit" className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-slate-950 font-extrabold py-3.5 rounded-xl shadow-lg shadow-emerald-500/10 transition-all transform hover:-translate-y-0.5 duration-200 mt-2">
+              <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3.5 rounded-xl shadow-lg shadow-emerald-500/10 transition-all transform hover:-translate-y-0.5 duration-200 mt-2">
                 {isRegistering ? 'Registrarme' : 'Entrar con Correo'}
               </button>
             </form>
