@@ -1045,7 +1045,7 @@ function Porcicontrol({ user, db, appId }) {
     .replace(/^-/, '-\u2060');
   // Egresos mostrados en pantalla con signo negativo explícito.
   const formatearMonedaNeg = (v) => `-\u2060${formatearMoneda(v)}`;
-  const getLoteActivo = (corralId) => listLotes.find(l => l.corralId === corralId && l.estado === 'Activo');
+  const getLoteActivo = (corralId) => listLotes.find(l => corralId != null && String(l.corralId) === String(corralId) && l.estado === 'Activo');
 
   const buildAdvancedFarmAiContext = () => {
     const round = (value, decimals = 2) => {

@@ -23,7 +23,26 @@ const diasEntre = (desde, hasta) => {
   return a && b ? Math.round((b - a) / DIA_MS) : null;
 };
 
-const ORDEN_ESTADO = { sobreEngorde: 0, mortalidad: 1, sinPesar: 2, bloqueada: 3, listo: 4, meta: 5 };
+// Los ids pueden venir como número o texto según quién creó el registro.
+const mismoId = (a, b) => a != null && b != null && String(a) === String(b);
+
+const compararNombres = (a, b) =>
+  String(a ?? '').localeCompare(String(b ?? ''), 'es', { numeric: true, sensitivity: 'base' });
+
+// Orden fijo de la granja: Corral 1, Corral 2 … Corral 10, sin importar urgencia ni ocupación.
+export function ordenarCorrales(corrales = []) {
+  return corrales
+    .map((corral, i) => ({ corral, i }))
+    .sort((a, b) => compararNombres(a.corral?.nombre, b.corral?.nombre) || a.i - b.i)
+    .map(({ corral }) => corral);
+}
+
+// Si un corral quedó sin nombre, se identifica por su posición en vez de un "Corral" genérico.
+export function nombreDeCorral(corral, posicion = -1) {
+  const nombre = String(corral?.nombre ?? '').trim();
+  if (nombre) return nombre;
+  return posicion >= 0 ? `Corral ${posicion + 1}` : 'Corral';
+}
 const ORDEN_SEVERIDAD = { danger: 0, warning: 1, info: 2 };
 const ORDEN_GRUPO = { atrasado: 0, hoy: 1, semana: 2 };
 
@@ -64,18 +83,21 @@ function pesajesDeLote(lote, pesos) {
 }
 
 export function construirLotes({ lotes, corrales, pesos = [], estadisticasDe, planDe, cronograma = [] }) {
+  const ordenados = ordenarCorrales(corrales);
   const filas = lotes
     .filter((l) => l.estado === 'Activo')
     .map((lote) => {
       const stats = estadisticasDe(lote);
       if (!stats) return null;
       const plan = planDe(lote) || { puedeVender: true };
-      const corral = corrales.find((c) => c.id === lote.corralId);
+      const indice = corrales.findIndex((c) => mismoId(c?.id, lote.corralId));
+      const corral = indice >= 0 ? corrales[indice] : null;
       const fase = faseDeLote(lote, stats, cronograma);
       return {
         id: lote.id,
         corralId: lote.corralId,
-        corral: corral?.nombre || 'Corral',
+        corral: corral ? nombreDeCorral(corral, indice) : (lote.corralNombre || 'Corral'),
+        orden: corral ? ordenados.indexOf(corral) : Number.MAX_SAFE_INTEGER,
         lote: lote.nombre || lote.raza || 'Lote',
         cerdos: stats.cantidadActual,
         dia: stats.diasLote,
@@ -98,7 +120,7 @@ export function construirLotes({ lotes, corrales, pesos = [], estadisticasDe, pl
     })
     .filter(Boolean);
 
-  return filas.sort((a, b) => (ORDEN_ESTADO[a.estado] - ORDEN_ESTADO[b.estado]) || a.corral.localeCompare(b.corral));
+  return filas.sort((a, b) => (a.orden - b.orden) || compararNombres(a.corral, b.corral));
 }
 
 export function construirBodega({ inventario, alimentos = [], hoyIso }) {
@@ -248,8 +270,11 @@ export function construirPanelPrincipal({
   onAbrirCorral,
 }) {
   const filas = construirLotes({ lotes, corrales, pesos, estadisticasDe, planDe, cronograma });
-  const ocupados = new Set(filas.map((f) => f.corralId));
-  const libres = corrales.filter((c) => !ocupados.has(c.id)).map((c) => ({ id: c.id, corral: c.nombre }));
+  const ocupados = new Set(filas.map((f) => String(f.corralId)));
+  const libres = ordenarCorrales(corrales)
+    .map((c, orden) => ({ c, orden }))
+    .filter(({ c }) => !ocupados.has(String(c.id)))
+    .map(({ c, orden }) => ({ id: c.id, corral: nombreDeCorral(c, corrales.indexOf(c)), orden }));
   const bodega = construirBodega({ inventario, alimentos, hoyIso });
 
   const alertas = ordenarAlertas([

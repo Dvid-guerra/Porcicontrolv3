@@ -184,7 +184,7 @@ export function PanelPrincipal({ datos, cargando = false, onAbrirCorral, onVerHo
         <Kpis r={datos?.resumen} loading={cargando} />
 
         {cargando ? <PanelCargando /> : (
-          <Card title="Corrales" subtitle="Ordenados por urgencia.">
+          <Card title="Corrales" subtitle="En el orden de la granja. El estado indica cuál atender.">
             <CorralesTable
               lotes={lotes}
               libres={datos.libres}

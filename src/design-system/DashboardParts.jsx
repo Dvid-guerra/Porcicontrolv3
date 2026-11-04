@@ -103,6 +103,12 @@ function ventaTexto(lote) {
 }
 
 export function CorralesTable({ lotes, libres = [], seleccionado, onSeleccionar, onAbrir }) {
+  // Ocupados y libres van juntos en el orden fijo de la granja (Corral 1, 2, 3…).
+  const filas = [
+    ...lotes.map((dato) => ({ libre: false, dato })),
+    ...libres.map((dato) => ({ libre: true, dato })),
+  ].sort((a, b) => (a.dato.orden ?? Number.MAX_SAFE_INTEGER) - (b.dato.orden ?? Number.MAX_SAFE_INTEGER));
+
   return (
     <>
       {/* Escritorio: tabla densa */}
@@ -123,7 +129,22 @@ export function CorralesTable({ lotes, libres = [], seleccionado, onSeleccionar,
             </tr>
           </thead>
           <tbody>
-            {lotes.map((lote) => {
+            {filas.map(({ libre, dato }) => {
+              if (libre) {
+                const c = dato;
+                return (
+              <tr key={c.id} className="border-t border-line">
+                <td className="pl-4 pr-3 py-2.5 type-strong text-ink-muted">{c.corral}</td>
+                <td colSpan={9} className="px-3 py-2.5 type-small text-ink-muted">
+                  <span className="inline-flex items-center gap-3">
+                    Disponible, sin lote activo
+                    {onAbrir && <Button size="sm" variant="quiet" icon={Plus} onClick={() => onAbrir(c.id)}>Ingresar lote</Button>}
+                  </span>
+                </td>
+              </tr>
+                );
+              }
+              const lote = dato;
               const activo = seleccionado === lote.id;
               return (
                 <tr key={lote.id} className={`border-t border-line ${activo ? 'bg-primary-soft' : 'hover:bg-surface-sunken'}`}>
@@ -162,24 +183,32 @@ export function CorralesTable({ lotes, libres = [], seleccionado, onSeleccionar,
                 </tr>
               );
             })}
-            {libres.map((c) => (
-              <tr key={c.id} className="border-t border-line">
-                <td className="pl-4 pr-3 py-2.5 type-strong text-ink-muted">{c.corral}</td>
-                <td colSpan={9} className="px-3 py-2.5 type-small text-ink-muted">
-                  <span className="inline-flex items-center gap-3">
-                    Disponible, sin lote activo
-                    {onAbrir && <Button size="sm" variant="quiet" icon={Plus} onClick={() => onAbrir(c.id)}>Ingresar lote</Button>}
-                  </span>
-                </td>
-              </tr>
-            ))}
           </tbody>
         </table>
       </div>
 
       {/* Móvil: tarjetas con los 3 datos que deciden en el corral */}
       <ul className="md:hidden border-t border-line">
-        {lotes.map((lote) => (
+        {filas.map(({ libre, dato }) => (libre ? (() => {
+          const c = dato;
+          return (
+          <li key={c.id} className="border-b border-line last:border-b-0">
+            <button
+              type="button"
+              onClick={() => onAbrir?.(c.id)}
+              className={`w-full text-left p-4 min-h-control-field flex items-center justify-between gap-3 active:bg-surface-sunken ${FOCUS_RING}`}
+            >
+              <span>
+                <span className="block type-strong text-ink-muted">{c.corral}</span>
+                <span className="block type-small text-ink-muted">Disponible, sin lote activo</span>
+              </span>
+              <span className="inline-flex items-center gap-1 type-strong text-ink whitespace-nowrap"><Plus size={16} aria-hidden="true" />Ingresar lote</span>
+            </button>
+          </li>
+          );
+        })() : (() => {
+          const lote = dato;
+          return (
           <li key={lote.id} className="border-b border-line last:border-b-0">
             <button
               type="button"
@@ -207,22 +236,8 @@ export function CorralesTable({ lotes, libres = [], seleccionado, onSeleccionar,
               </span>
             </button>
           </li>
-        ))}
-        {libres.map((c) => (
-          <li key={c.id} className="border-b border-line last:border-b-0">
-            <button
-              type="button"
-              onClick={() => onAbrir?.(c.id)}
-              className={`w-full text-left p-4 min-h-control-field flex items-center justify-between gap-3 active:bg-surface-sunken ${FOCUS_RING}`}
-            >
-              <span>
-                <span className="block type-strong text-ink-muted">{c.corral}</span>
-                <span className="block type-small text-ink-muted">Disponible, sin lote activo</span>
-              </span>
-              <span className="inline-flex items-center gap-1 type-strong text-ink whitespace-nowrap"><Plus size={16} aria-hidden="true" />Ingresar lote</span>
-            </button>
-          </li>
-        ))}
+          );
+        })()))}
       </ul>
     </>
   );

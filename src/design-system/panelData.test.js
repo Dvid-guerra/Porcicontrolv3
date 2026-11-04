@@ -132,7 +132,7 @@ describe('construirPanelPrincipal con estadísticas reales', () => {
 
   it('solo cuenta lotes activos y deja libre el corral del lote cerrado', () => {
     expect(datos.lotes).toHaveLength(2);
-    expect(datos.libres).toEqual([{ id: 'c3', corral: 'Corral 3' }]);
+    expect(datos.libres).toEqual([{ id: 'c3', corral: 'Corral 3', orden: 2 }]);
     expect(datos.resumen.corralesActivos).toBe(2);
     expect(datos.resumen.corralesTotales).toBe(3);
   });
@@ -193,5 +193,44 @@ describe('construirPanelPrincipal con estadísticas reales', () => {
     expect(vacio.resumen.totalCerdos).toBe(0);
     expect(vacio.resumen.pesoPromedio).toBe(0);
     expect(vacio.resumen.menorCobertura).toBeNull();
+  });
+});
+
+describe('orden y nombre de los corrales', () => {
+  const stats = () => ({ cantidadActual: 10, diasLote: 30, pesoParaProyeccion: 80, mortalidadPorcentaje: 0 });
+  const base = { estadisticasDe: stats, planDe: () => ({ puedeVender: true }), hoyIso: '2026-11-04' };
+
+  it('ordena Corral 1…10 por número, mezclando ocupados y libres, sin importar urgencia', () => {
+    const corrales = [
+      { id: 'c10', nombre: 'Corral 10' }, { id: 'c2', nombre: 'Corral 2' },
+      { id: 'c1', nombre: 'Corral 1' }, { id: 'c3', nombre: 'Corral 3' },
+    ];
+    const lotes = [
+      { id: 'l10', corralId: 'c10', estado: 'Activo' },
+      { id: 'l2', corralId: 'c2', estado: 'Activo' },
+    ];
+    const datos = construirPanelPrincipal({ ...base, corrales, lotes });
+    const todos = [...datos.lotes, ...datos.libres].sort((a, b) => a.orden - b.orden).map((f) => f.corral);
+    expect(todos).toEqual(['Corral 1', 'Corral 2', 'Corral 3', 'Corral 10']);
+    expect(datos.lotes.map((l) => l.corral)).toEqual(['Corral 2', 'Corral 10']);
+  });
+
+  it('encuentra el corral aunque el id venga como número en un lado y texto en el otro', () => {
+    const datos = construirPanelPrincipal({
+      ...base,
+      corrales: [{ id: 1, nombre: 'Corral 1' }, { id: 2, nombre: 'Corral 2' }],
+      lotes: [{ id: 'l1', corralId: '2', estado: 'Activo' }],
+    });
+    expect(datos.lotes[0].corral).toBe('Corral 2');
+    expect(datos.libres.map((c) => c.corral)).toEqual(['Corral 1']);
+  });
+
+  it('un corral sin nombre se identifica por su número en vez de "Corral"', () => {
+    const datos = construirPanelPrincipal({
+      ...base,
+      corrales: [{ id: 'a', nombre: 'Corral 1' }, { id: 'b', nombre: '' }],
+      lotes: [{ id: 'l1', corralId: 'b', estado: 'Activo' }],
+    });
+    expect(datos.lotes[0].corral).toBe('Corral 2');
   });
 });
