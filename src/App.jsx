@@ -51,7 +51,8 @@ import {
   crearFirestoreConCacheOffline,
   useCloudStorage,
   useOfflineSyncStatus,
-  ejecutarTransaccionMultiClaveOffline
+  ejecutarTransaccionMultiClaveOffline,
+  reiniciarCacheLocal
 } from './hooks/useOfflineCloudSync.js';
 import {
   construirUrlWhatsApp,
@@ -60,6 +61,11 @@ import {
   formatearOrdenCompraWhatsApp,
   formatearFichaCorralWhatsApp
 } from './domain/whatsappReports.js';
+import { aplicarCapturas, construirCatalogoEmpleados } from './domain/capturasEmpleado.js';
+import { ROL, useAcceso } from './empleados/accesos.js';
+import { useCapturasPendientes, useSincronizarCatalogoEmpleados } from './empleados/adminEmpleados.js';
+import PanelEmpleados from './empleados/PanelEmpleados.jsx';
+import AccesoRestringido from './empleados/AccesoRestringido.jsx';
 
 // --- IMPORTACIONES DE FIREBASE NUBE ---
 import { initializeApp } from 'firebase/app';
@@ -131,6 +137,7 @@ const SECCIONES_NAV = [
     titulo: 'Administración',
     items: [
       { id: 'historial', label: 'Historial de lotes', icon: ClipboardList, activoEn: ['historial', 'reporteHistorial'] },
+      { id: 'empleados', label: 'Empleados', icon: Users, activoEn: ['empleados'] },
       { id: 'config', label: 'Ajustes y fórmulas', icon: Settings, activoEn: ['config', 'laboratorio'] }
     ]
   }
@@ -145,6 +152,7 @@ const TITULOS_VISTA = {
   historial: { label: 'Historial de lotes', icon: ClipboardList },
   reporteHistorial: { label: 'Reporte histórico', icon: ClipboardList },
   config: { label: 'Ajustes', icon: Settings },
+  empleados: { label: 'Empleados', icon: Users },
   prepararVenta: { label: 'Báscula de venta', icon: Scale },
   resumenVenta: { label: 'Reportes de venta', icon: PieChart },
   imprimirFicha: { label: 'Ficha de trazabilidad', icon: Printer },
@@ -721,6 +729,18 @@ function Porcicontrol({ user, db, appId }) {
   const listUsosInsumos = safeArr(usosInsumos);
 
   const offlineStatus = useOfflineSyncStatus({ db, user, appId });
+  const [reiniciandoCache, setReiniciandoCache] = useState(false);
+  const handleReiniciarCacheLocal = () => {
+    const pendientes = offlineStatus.pendientesCount;
+    pedirConfirmacion(
+      'Reiniciar datos de este dispositivo',
+      `Se borra la copia guardada en este navegador y se vuelve a descargar todo de la nube. Tus datos en la nube no se tocan.${pendientes > 0 ? ` Los ${pendientes} cambio(s) hechos sin señal se conservan y se subirán después.` : ''} Cierra las demás pestañas de Porcicontrol antes de continuar.`,
+      async () => {
+        setReiniciandoCache(true);
+        await reiniciarCacheLocal(db, appId);
+      }
+    );
+  };
 
   const runFarmUpdates = async (updates) => {
     await ejecutarTransaccionMultiClaveOffline({
@@ -1925,6 +1945,83 @@ ${JSON.stringify(contextoGranja)}`;
       mixAlertWeight: pesoAlertaMezcla
     });
   }
+
+  // --- PLATAFORMA DE EMPLEADOS ---
+  // La app de empleados no lee los datos de la granja: solo este catálogo (corrales
+  // con lote activo y nombres de productos, sin precios), que se publica desde aquí.
+  const catalogoEmpleados = isAppReady
+    ? construirCatalogoEmpleados({
+        corrales: listCorrales,
+        lotes: listLotes,
+        infoPorLote: Object.fromEntries(
+          listLotes.filter(l => l.estado === 'Activo').map(lote => {
+            const stats = calcularEstadisticasLote(lote);
+            const contexto = resolverContextoTolvaQr({
+              corral: listCorrales.find(c => String(c.id) === String(lote.corralId)) || { id: lote.corralId, nombre: 'Corral' },
+              loteActivo: lote,
+              stats,
+              cronograma: CRONOGRAMA_ALIMENTACION,
+              catalogoAlimento: listCatAlimentos,
+              inventarioCentral
+            });
+            return [lote.id, { cerdos: stats.cantidadActual, fase: contexto.faseActual, alimentoSugerido: contexto.alimentoSugerido }];
+          })
+        ),
+        catalogoAlimento: listCatAlimentos,
+        catalogoMedico: listCatalogoMedico,
+        catalogoInsumos: listCatalogoInsumos
+      })
+    : null;
+  useSincronizarCatalogoEmpleados(db, appId, catalogoEmpleados);
+  const capturasPendientes = useCapturasPendientes(db, appId);
+
+  // Convierte lo que anotaron los empleados en registros reales (con costo y descuento
+  // de bodega). Los ids salen de la captura, así que reintentar no duplica nada.
+  const aplicarCapturasEmpleado = async (capturas) => {
+    const { cambios, resultados } = aplicarCapturas(capturas, {
+      lotes: listLotes,
+      catalogoAlimento: listCatAlimentos,
+      inventarioCentral,
+      inventarioMedico,
+      inventarioInsumos,
+      vivosPorLote: (loteId) => {
+        const lote = listLotes.find(l => l.id === loteId);
+        return lote ? calcularEstadisticasLote(lote).cantidadActual : 0;
+      },
+      existentes: {
+        alimentos: listAlimentos,
+        pesos: listPesos,
+        bajas: listBajas,
+        vacunas: listVacunas,
+        usosInsumos: listUsosInsumos
+      }
+    });
+
+    const agregar = (nuevos) => (prev) => {
+      const actuales = safeArr(prev);
+      const ids = new Set(actuales.map(r => r.id));
+      return [...actuales, ...nuevos.filter(r => !ids.has(r.id))];
+    };
+    // Primero los registros secundarios (gasto, uso de farmacia) y al final el principal,
+    // que es el que marca la captura como ya aplicada.
+    if (cambios.gastosExtra.length > 0) await setGastosExtra(agregar(cambios.gastosExtra));
+    if (cambios.usosMedicos.length > 0) await setUsosMedicos(agregar(cambios.usosMedicos));
+    if (cambios.alimentos.length > 0) await setAlimentos(agregar(cambios.alimentos));
+    if (cambios.pesos.length > 0) await setPesos(agregar(cambios.pesos));
+    if (cambios.bajas.length > 0) await setBajas(agregar(cambios.bajas));
+    if (cambios.vacunas.length > 0) await setVacunas(agregar(cambios.vacunas));
+    if (cambios.usosInsumos.length > 0) await setUsosInsumos(agregar(cambios.usosInsumos));
+
+    const aplicadas = resultados.filter(r => r.ok && !r.yaAplicada).length;
+    if (aplicadas > 0) {
+      emitirNotificacionPush({
+        tipo: 'sistema',
+        titulo: 'Registros de empleados aprobados',
+        descripcion: `${aplicadas} registro${aplicadas === 1 ? '' : 's'} de la app de empleados`
+      });
+    }
+    return resultados;
+  };
 
   const costoCalculadoPuro = useMemo(() => {
     const infoAlimento = listCatAlimentos.find(a => a.nombre === puroInput.tipo);
@@ -6174,6 +6271,34 @@ return (
           </button>
         </div>
       </div>
+
+      {/* DATOS LOCALES DEL DISPOSITIVO */}
+      <div className="bg-white p-4 sm:p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col sm:flex-row sm:items-center gap-4">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
+          <div className="p-2.5 bg-slate-100 text-slate-700 rounded-xl"><Smartphone size={20} /></div>
+          <div className="min-w-0">
+            <h3 className="font-bold text-slate-800">Datos en este dispositivo</h3>
+            <p className="text-xs text-slate-500 leading-relaxed mt-0.5">
+              Si este navegador muestra datos viejos o vacíos y en otro dispositivo se ven bien, borra la copia local y vuelve a descargar todo de la nube. Los cambios hechos sin señal se conservan.
+            </p>
+            <p className="text-[11px] text-slate-400 font-semibold mt-1.5">
+              {offlineStatus.problemaNube
+                ? 'Estado: sin datos recientes de la nube'
+                : offlineStatus.enLinea ? 'Estado: sincronizado con la nube' : 'Estado: sin conexión (Modo Galpón)'}
+              {offlineStatus.pendientesCount > 0 ? ` · ${offlineStatus.pendientesCount} cambio(s) pendientes de subir` : ''}
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleReiniciarCacheLocal}
+          disabled={reiniciandoCache || !offlineStatus.enLinea}
+          title={!offlineStatus.enLinea ? 'Necesitas conexión para volver a descargar los datos' : undefined}
+          className="shrink-0 inline-flex items-center justify-center gap-1.5 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-800 border border-slate-300 font-bold text-xs px-4 py-2.5 rounded-xl transition-colors"
+        >
+          <RefreshCw size={14} className={reiniciandoCache ? 'animate-spin' : ''} /> Reiniciar datos del dispositivo
+        </button>
+      </div>
     </div>
   );
   // --- RENDER: DETALLE DEL CORRAL ---
@@ -9922,7 +10047,7 @@ return (
               <div className="space-y-1">
                 {seccion.items.map(item => {
                   const activo = item.activoEn.includes(vista);
-                  const badge = item.id === 'hoy' ? pendientesHoyCount : 0;
+                  const badge = item.id === 'hoy' ? pendientesHoyCount : item.id === 'empleados' ? capturasPendientes.length : 0;
                   return (
                     <button
                       key={item.id}
@@ -10108,6 +10233,26 @@ return (
             </button>
           </div>
         </header>
+        {offlineStatus.problemaNube && (
+          <div role="alert" className="shrink-0 print:hidden bg-amber-50 border-b border-amber-200 px-3 sm:px-5 lg:px-8 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-amber-900">
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertTriangle size={18} className="text-amber-700 mt-0.5" />
+              <p className="text-xs sm:text-sm font-semibold leading-snug">
+                {offlineStatus.problemaNube === 'error'
+                  ? `No se pudieron leer los datos de la nube (${offlineStatus.errorNube}). Lo que ves puede estar incompleto.`
+                  : 'Hay conexión, pero no están llegando datos de la nube. Lo que ves puede estar desactualizado.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleReiniciarCacheLocal}
+              disabled={reiniciandoCache}
+              className="self-start sm:self-auto shrink-0 inline-flex items-center gap-1.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-60 text-white font-bold text-xs px-3 py-2 rounded-xl transition-colors"
+            >
+              <RefreshCw size={14} className={reiniciandoCache ? 'animate-spin' : ''} /> Reiniciar datos del dispositivo
+            </button>
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-slate-50 pb-24 lg:pb-10 overscroll-contain">
           {vista === 'hoy' && renderHoy()}
           {vista === 'dashboard' && renderDashboard()}
@@ -10122,6 +10267,16 @@ return (
           {vista === 'imprimirFicha' && renderFichaCorral()}
           {vista === 'reporteHistorial' && renderReporteHistorial()}
           {vista === 'finanzasGlobales' && renderFinanzasGlobales()}
+          {vista === 'empleados' && (
+            <PanelEmpleados
+              db={db}
+              appId={appId}
+              user={user}
+              pendientes={capturasPendientes}
+              onAplicar={aplicarCapturasEmpleado}
+              urlEmpleados={import.meta.env.VITE_URL_APP_EMPLEADOS || ''}
+            />
+          )}
         </div>
 
         {/* BARRA DE NAVEGACIÓN INFERIOR PARA PULGAR EN MÓVIL (MODO CAMPO) */}
@@ -10287,6 +10442,9 @@ function App() {
     });
   }, []);
 
+  // Rol de la cuenta: solo los administradores entran a la app principal.
+  const acceso = useAcceso(db, globalAppId, user);
+
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -10433,7 +10591,29 @@ function App() {
     );
   }
 
-  // SI EL USUARIO ESTÁ AUTENTICADO, CARGAMOS EL ERP
+  if (acceso.estado === 'cargando') {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-sidebar text-sidebar-ink">
+        <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-24 w-auto mb-6" />
+        <h2 className="text-2xl font-bold">Comprobando acceso...</h2>
+      </div>
+    );
+  }
+
+  // Cuentas sin aprobar o de empleados: no se monta el ERP ni se pide ningún dato.
+  if (acceso.estado !== ROL.admin) {
+    return (
+      <AccesoRestringido
+        estado={acceso.estado}
+        user={user}
+        marca={marcaGuerraFarm}
+        urlEmpleados={import.meta.env.VITE_URL_APP_EMPLEADOS || ''}
+        onSalir={() => signOut(auth)}
+      />
+    );
+  }
+
+  // SI EL USUARIO ES ADMINISTRADOR, CARGAMOS EL ERP
   return <Porcicontrol user={user} db={db} appId={globalAppId} />;
 }
 

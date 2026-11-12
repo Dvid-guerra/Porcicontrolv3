@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
+  clearIndexedDbPersistence,
   doc,
   getFirestore,
   initializeFirestore,
   onSnapshot,
   persistentLocalCache,
   persistentMultipleTabManager,
-  runTransaction
+  runTransaction,
+  terminate
 } from 'firebase/firestore';
 import {
   acumularCambioPendiente,
@@ -38,6 +40,39 @@ const statusSubscribers = new Set();
 const keySubscribers = new Map(); // `${appId}:${key}` -> Set<fn>
 let isFlushingGlobal = false;
 let lastSyncedAtGlobal = null;
+
+// Salud de la conexión con la nube. Firestore no da error cuando su caché local queda
+// trabada (p. ej. otra pestaña "líder" con la caché borrada): simplemente no llegan
+// datos del servidor. Por eso se registra cuándo llegó el último dato real.
+const INICIO_SESION_AT = Date.now();
+export const ESPERA_DATOS_NUBE_MS = 12_000;
+let ultimoDatoServidorAt = null;
+let ultimoErrorNube = null;
+
+function registrarDatoServidor() {
+  const primeraVez = ultimoDatoServidorAt === null || ultimoErrorNube !== null;
+  ultimoDatoServidorAt = Date.now();
+  ultimoErrorNube = null;
+  if (primeraVez) notificarEstadoCola();
+}
+
+function registrarErrorNube(error) {
+  ultimoErrorNube = error?.code || 'desconocido';
+  notificarEstadoCola();
+}
+
+/**
+ * Diagnóstico puro (testeable): ¿la app debería avisar que no recibe datos de la nube?
+ * - 'error': Firestore rechazó la lectura (permisos, App Check…).
+ * - 'sinRespuesta': hay conexión pero no llegó ningún dato del servidor en el tiempo de espera.
+ * - null: todo bien, o sin conexión (eso ya lo cubre el aviso de Modo Galpón).
+ */
+export function diagnosticarNube({ enLinea, ahora, inicioAt, ultimoDatoAt, error, esperaMs = ESPERA_DATOS_NUBE_MS }) {
+  if (!enLinea) return null;
+  if (error) return 'error';
+  if (ultimoDatoAt === null && ahora - inicioAt >= esperaMs) return 'sinRespuesta';
+  return null;
+}
 
 function notificarEstadoCola() {
   statusSubscribers.forEach((fn) => {
@@ -204,6 +239,14 @@ export function useOfflineSyncStatus({ db, user, appId }) {
     };
   }, [refrescar, sincronizarAhora]);
 
+  // Re-evalúa el diagnóstico cuando se cumple el tiempo de espera de la primera carga.
+  useEffect(() => {
+    if (ultimoDatoServidorAt !== null) return undefined;
+    const restante = Math.max(0, INICIO_SESION_AT + ESPERA_DATOS_NUBE_MS - Date.now());
+    const timer = setTimeout(refrescar, restante + 50);
+    return () => clearTimeout(timer);
+  }, [refrescar]);
+
   const cola = leerColaPendiente(getLocalStorage(), appId);
   const pendientesCount = Object.keys(cola).length;
 
@@ -212,7 +255,15 @@ export function useOfflineSyncStatus({ db, user, appId }) {
     sincronizando: isFlushingGlobal,
     pendientesCount,
     ultimoSyncAt: lastSyncedAtGlobal,
-    sincronizarAhora
+    sincronizarAhora,
+    problemaNube: diagnosticarNube({
+      enLinea,
+      ahora: Date.now(),
+      inicioAt: INICIO_SESION_AT,
+      ultimoDatoAt: ultimoDatoServidorAt,
+      error: ultimoErrorNube
+    }),
+    errorNube: ultimoErrorNube
   };
 }
 
@@ -264,9 +315,13 @@ export function useCloudStorage(key, initialValue, user, dbInstance, appId) {
     const storage = getLocalStorage();
     const docRef = doc(dbInstance, 'artifacts', appId, 'public', 'data', 'granja_compartida', key);
 
+    let ultimoJson = null;
     const unsubscribe = onSnapshot(
       docRef,
+      // Con metadatos para enterarnos cuando el servidor confirma datos iguales a la caché.
+      { includeMetadataChanges: true },
       (docSnap) => {
+        if (!docSnap.metadata.fromCache) registrarDatoServidor();
         const cola = leerColaPendiente(storage, appId);
         // Si esta clave tiene cambios hechos sin señal aún pendientes de reconciliar,
         // respetamos el dato local del operario hasta que termine la fusión con la nube.
@@ -287,6 +342,13 @@ export function useCloudStorage(key, initialValue, user, dbInstance, appId) {
             nextVal = data !== undefined ? data : initialValueRef.current;
           }
         }
+        // Los avisos solo de metadatos traen los mismos datos: no re-renderizar por ellos.
+        const json = JSON.stringify(nextVal);
+        if (json === ultimoJson) {
+          setIsLoaded(true);
+          return;
+        }
+        ultimoJson = json;
         stateRef.current = nextVal;
         setStateInternal(nextVal);
         guardarCacheLocal(storage, appId, key, nextVal);
@@ -294,6 +356,7 @@ export function useCloudStorage(key, initialValue, user, dbInstance, appId) {
       },
       (error) => {
         console.warn('Modo offline / caché local activo para:', key, error?.code || error);
+        if (!esErrorDeRedFirestore(error)) registrarErrorNube(error);
         setIsLoaded(true);
       }
     );
@@ -432,4 +495,41 @@ export async function ejecutarTransaccionMultiClaveOffline({
     }
     throw error;
   }
+}
+
+/**
+ * Borra la copia local de la app en este navegador y recarga, para volver a bajar todo de la nube.
+ * Conserva la cola de cambios hechos sin señal (no se pierde trabajo del galpón).
+ */
+export async function reiniciarCacheLocal(dbInstance, appId) {
+  try {
+    await terminate(dbInstance);
+  } catch {
+    // Si ya estaba cerrada, seguimos
+  }
+  try {
+    await clearIndexedDbPersistence(dbInstance);
+  } catch (error) {
+    // Falla si otra pestaña de la app sigue abierta y usando la caché
+    console.warn('No se pudo borrar la caché de Firestore:', error?.code || error);
+  }
+
+  const storage = getLocalStorage();
+  if (storage) {
+    const prefijo = `porci_cloud_cache_${appId || 'local'}_`;
+    Object.keys(storage)
+      .filter((k) => k.startsWith(prefijo))
+      .forEach((k) => storage.removeItem(k));
+  }
+
+  if (typeof caches !== 'undefined') {
+    try {
+      const claves = await caches.keys();
+      await Promise.all(claves.filter((k) => k.startsWith('porcicontrol-shell-')).map((k) => caches.delete(k)));
+    } catch {
+      // Sin acceso a Cache Storage: no es crítico
+    }
+  }
+
+  window.location.reload();
 }

@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import { defineConfig, globalIgnores } from 'eslint/config';
 
 export default defineConfig([
-  globalIgnores(['dist', 'build', 'instalador-final', 'functions/node_modules', 'refactor.cjs', 'refactor.js', 'test_gemini.js']),
+  globalIgnores(['dist', 'dist-empleados', 'build', 'instalador-final', 'functions/node_modules', 'refactor.cjs', 'refactor.js', 'test_gemini.js']),
   js.configs.recommended,
   {
     files: ['src/**/*.{js,jsx}'],
@@ -32,7 +32,7 @@ export default defineConfig([
     }
   },
   {
-    files: ['main.js', 'vite.config.js', 'tailwind.config.js', 'postcss.config.js', 'functions/src/**/*.js'],
+    files: ['main.js', 'vite.config.js', 'vite.empleados.config.js', 'tailwind.config.js', 'postcss.config.js', 'functions/src/**/*.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       globals: globals.node,

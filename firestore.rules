@@ -1,13 +1,80 @@
 rules_version = '2';
 
+// Permisos de Porcicontrol.
+//
+// Cada cuenta tiene un documento en artifacts/{appId}/members/{uid}:
+//   { active: true|false, role: 'admin' | 'empleado' | 'pendiente', email, nombre }
+//
+// - admin:     lee y escribe todo (app principal).
+// - empleado:  solo lee el catálogo saneado (corrales y productos, sin precios) y
+//              crea "capturas" que un admin aprueba después. No ve la granja.
+// - pendiente / sin documento: nada. Crear una cuenta ya no da acceso.
+//
+// Un miembro activo sin campo `role` cuenta como admin (membresías creadas antes
+// de que existieran los roles).
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
       return request.auth != null;
     }
 
+    function rutaMiembro(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/members/$(request.auth.uid);
+    }
+
+    function miembroActivo(appId) {
+      return signedIn()
+        && exists(rutaMiembro(appId))
+        && get(rutaMiembro(appId)).data.active == true;
+    }
+
+    function rolDe(appId) {
+      return get(rutaMiembro(appId)).data.get('role', 'admin');
+    }
+
+    function esAdmin(appId) {
+      return miembroActivo(appId) && rolDe(appId) == 'admin';
+    }
+
+    function esEmpleado(appId) {
+      return miembroActivo(appId) && rolDe(appId) == 'empleado';
+    }
+
+    // Membresías. Cualquiera con sesión puede dejar SU solicitud (siempre inactiva);
+    // solo un admin la activa, le cambia el rol o la borra.
+    match /artifacts/{appId}/members/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || esAdmin(appId));
+      allow list: if esAdmin(appId);
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['active', 'role', 'email', 'nombre', 'solicitadoEn'])
+        && request.resource.data.active == false
+        && request.resource.data.role == 'pendiente';
+      allow update, delete: if esAdmin(appId);
+    }
+
+    // Datos de la granja (lotes, bodega, ventas, finanzas): solo administradores.
     match /artifacts/{appId}/public/data/granja_compartida/{key} {
-      allow read, write: if signedIn();
+      allow read, write: if esAdmin(appId);
+    }
+
+    // Lo único que lee la app de empleados: catálogo sin precios y lista de personal.
+    match /artifacts/{appId}/public/data/granja_empleados/{docId} {
+      allow read: if esAdmin(appId) || esEmpleado(appId);
+      allow write: if esAdmin(appId);
+    }
+
+    // Capturas de empleados. El empleado crea y puede borrar mientras siga pendiente;
+    // aprobar, rechazar o editar es cosa del admin.
+    match /artifacts/{appId}/public/data/granja_capturas/{capturaId} {
+      allow read: if esAdmin(appId) || esEmpleado(appId);
+      allow create: if (esAdmin(appId) || esEmpleado(appId))
+        && request.resource.data.estado == 'pendiente'
+        && request.resource.data.creadaPorUid == request.auth.uid
+        && request.resource.data.tipo in ['concentrado', 'medicamento', 'insumo', 'peso', 'baja'];
+      allow update: if esAdmin(appId);
+      allow delete: if esAdmin(appId)
+        || (esEmpleado(appId) && resource.data.estado == 'pendiente');
     }
 
     match /{document=**} {

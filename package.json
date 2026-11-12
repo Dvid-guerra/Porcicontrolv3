@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "dev:empleados": "vite --config vite.empleados.config.js",
+    "build:empleados": "vite build --config vite.empleados.config.js",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",

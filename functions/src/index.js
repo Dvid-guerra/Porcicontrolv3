@@ -19,7 +19,8 @@ export const askFarmAssistant = onCall(
     const membership = await getFirestore()
       .doc(`artifacts/${APP_ID}/members/${request.auth.uid}`)
       .get();
-    if (!membership.exists || membership.data()?.active !== true) {
+    // El asistente ve finanzas de la granja: solo administradores (no la cuenta de empleados).
+    if (!membership.exists || membership.data()?.active !== true || membership.data()?.role === 'empleado') {
       throw new HttpsError('permission-denied', 'No perteneces a esta granja.');
     }
 
