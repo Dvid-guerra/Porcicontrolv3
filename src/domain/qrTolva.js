@@ -1,3 +1,5 @@
+import { etapaAlimentacion } from './granja/etapa.js';
+
 // ============================================================================
 // DOMINIO: DESCUENTO DE CONCENTRADO EN TOLVA POR CÓDIGO QR (OPCIÓN 1: QR EN CORRAL)
 // ============================================================================
@@ -129,21 +131,7 @@ export function resolverContextoTolvaQr({
   }
 
   const diasLote = Number(stats?.diasLote) || 1;
-  const fasePorDias =
-    cronograma.find((f) => diasLote >= f.diaInicio && diasLote <= f.diaFin)?.fase ||
-    cronograma[cronograma.length - 1]?.fase ||
-    1;
-  const faseActual = Number(loteActivo.faseActual) || fasePorDias;
-  const faseInfo =
-    cronograma.find((f) => f.fase === faseActual) ||
-    cronograma[cronograma.length - 1] ||
-    { fase: faseActual, alimento: catalogoAlimento[0]?.nombre || '', consumoTotalLb: 0 };
-
-  const alimentoSugerido =
-    catalogoAlimento.find((a) => a.nombre === faseInfo.alimento)?.nombre ||
-    catalogoAlimento[0]?.nombre ||
-    faseInfo.alimento ||
-    '';
+  const { faseActual, faseInfo, alimentoSugerido } = etapaAlimentacion(loteActivo, diasLote, cronograma, catalogoAlimento);
 
   const infoCatalogo = catalogoAlimento.find((a) => a.nombre === alimentoSugerido) || null;
   const itemStock = inventarioCentral.find((i) => i.nombre === alimentoSugerido) || null;

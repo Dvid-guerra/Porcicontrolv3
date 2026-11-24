@@ -1,12 +1,14 @@
 {
   "firestore": {
-    "rules": "firestore.rules"
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   },
   "functions": {
     "source": "functions",
-    "runtime": "nodejs20"
+    "runtime": "nodejs22"
   },
   "hosting": {
+    "site": "agroporcina",
     "public": "dist",
     "ignore": [
       "firebase.json",

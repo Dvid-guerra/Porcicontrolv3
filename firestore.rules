@@ -40,6 +40,18 @@ service cloud.firestore {
       return miembroActivo(appId) && rolDe(appId) == 'empleado';
     }
 
+    function correoActual() {
+      return request.auth.token.get('email', '').lower();
+    }
+    function invitacion(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/invitaciones/$(correoActual());
+    }
+    match /artifacts/{appId}/invitaciones/{correo} {
+      allow get: if esAdmin(appId) || (signedIn() && correo == correoActual());
+      allow list, create, update: if esAdmin(appId);
+      allow delete: if esAdmin(appId) || (signedIn() && correo == correoActual()
+        && request.auth.token.get('email_verified', false));
+    }
     // Membresías. Cualquiera con sesión puede dejar SU solicitud (siempre inactiva);
     // solo un admin la activa, le cambia el rol o la borra.
     match /artifacts/{appId}/members/{uid} {
@@ -49,8 +61,14 @@ service cloud.firestore {
         && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(['active', 'role', 'email', 'nombre', 'solicitadoEn'])
         && request.resource.data.active == false
+        && request.resource.data.email == request.auth.token.get('email', '')
         && request.resource.data.role == 'pendiente';
-      allow update, delete: if esAdmin(appId);
+      allow update: if esAdmin(appId) || (signedIn() && uid == request.auth.uid
+        && request.auth.token.get('email_verified', false) && resource.data.active == false
+        && exists(invitacion(appId)) && !existsAfter(invitacion(appId))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'active'])
+        && request.resource.data.active == true && request.resource.data.role == 'empleado');
+      allow delete: if esAdmin(appId);
     }
 
     // Datos de la granja (lotes, bodega, ventas, finanzas): solo administradores.
@@ -58,23 +76,45 @@ service cloud.firestore {
       allow read, write: if esAdmin(appId);
     }
 
-    // Lo único que lee la app de empleados: catálogo sin precios y lista de personal.
+    // Catálogo de trabajo sin precios. Otros documentos son administrativos.
     match /artifacts/{appId}/public/data/granja_empleados/{docId} {
-      allow read: if esAdmin(appId) || esEmpleado(appId);
+      allow read: if esAdmin(appId) || (docId == 'catalogo' && esEmpleado(appId));
       allow write: if esAdmin(appId);
     }
 
     // Capturas de empleados. El empleado crea y puede borrar mientras siga pendiente;
     // aprobar, rechazar o editar es cosa del admin.
     match /artifacts/{appId}/public/data/granja_capturas/{capturaId} {
-      allow read: if esAdmin(appId) || esEmpleado(appId);
-      allow create: if (esAdmin(appId) || esEmpleado(appId))
-        && request.resource.data.estado == 'pendiente'
-        && request.resource.data.creadaPorUid == request.auth.uid
-        && request.resource.data.tipo in ['concentrado', 'medicamento', 'insumo', 'peso', 'baja'];
-      allow update: if esAdmin(appId);
-      allow delete: if esAdmin(appId)
-        || (esEmpleado(appId) && resource.data.estado == 'pendiente');
+      function propia() {
+        return esEmpleado(appId) && resource.data.creadaPorUid == request.auth.uid;
+      }
+
+      function datosValidos(d) {
+        let base = ['tipo', 'estado', 'corralId', 'corralNombre', 'loteId', 'loteNombre',
+                    'fecha', 'empleado', 'nota', 'creadaEn', 'creadaPorUid', 'cantidad'];
+        return d.keys().hasAll(base)
+          && d.creadaPorUid == request.auth.uid && d.estado == 'pendiente'
+          && d.corralId is string && d.corralNombre is string && d.loteId is string && d.loteNombre is string
+          && d.loteId.size() > 0 && d.corralId.size() > 0
+          && d.empleado == request.auth.token.get('email', request.auth.uid)
+          && d.fecha is string && d.fecha.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+          && d.nota is string && d.nota.size() <= 300 && d.creadaEn is int
+          && d.cantidad is number && d.cantidad > 0
+          && ((d.tipo == 'concentrado' && d.keys().hasOnly(base.concat(['alimento', 'unidad', 'fase']))
+               && d.alimento is string && d.fase is number
+               && ((d.unidad == 'lb' && d.cantidad <= 20000) || (d.unidad == 'sacos' && d.cantidad <= 200)))
+           || (d.tipo in ['medicamento', 'insumo'] && d.keys().hasOnly(base.concat(['productoId', 'nombre', 'unidad']))
+               && d.productoId is string && d.nombre is string && d.unidad is string && d.cantidad <= 10000
+               && (d.tipo == 'medicamento' || d.productoId.size() > 0))
+           || (d.tipo == 'baja' && d.keys().hasOnly(base.concat(['causa']))
+               && d.cantidad is int && d.causa is string && d.causa.size() > 0));
+      }
+
+      allow read: if esAdmin(appId) || propia();
+      allow create: if esEmpleado(appId) && datosValidos(request.resource.data);
+      allow update: if esAdmin(appId) && resource.data.estado == 'pendiente'
+        && request.resource.data.estado in ['aplicada', 'rechazada'];
+      allow delete: if esAdmin(appId) || (propia() && resource.data.estado == 'pendiente');
     }
 
     match /{document=**} {

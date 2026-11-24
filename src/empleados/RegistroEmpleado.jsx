@@ -1,24 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, Check, CheckCircle, ChevronLeft, Clock, CloudOff, CloudUpload, LogOut,
-  Minus, Package, Plus, QrCode, Scale, Skull, Syringe, Trash2, UserRound, Wheat, XCircle
+  AlertTriangle, Check, CheckCircle, ChevronDown, ChevronLeft, Clock, CloudOff, CloudUpload, LogOut,
+  Minus, Package, Plus, QrCode, Skull, Syringe, Trash2, UserRound, Wheat, XCircle
 } from 'lucide-react';
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { deleteDoc, doc, onSnapshot, orderBy, query, setDoc, where } from 'firebase/firestore';
+import { deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import marcaGuerraFarm from '../design-system/assets/guerra-farm-marca-sobre-bosque.png';
 import { formatLocalIsoDate } from '../domain/fieldUx.js';
 import { ESTADO_CAPTURA, ETIQUETA_TIPO, construirCaptura, describirCaptura } from '../domain/capturasEmpleado.js';
-import { APP_ID_GRANJA, ROL, colCapturas, refCatalogoEmpleados, refPersonal, useAcceso } from './accesos.js';
-import { auth, db } from './firebaseEmpleados.js';
+import { colCapturas, refCatalogoEmpleados, mensajeFirestore } from './accesos.js';
+import { escucharHistorialEmpleado } from './historialEmpleado.js';
 import EscanerCorral from './EscanerCorral.jsx';
-
-const CLAVE_NOMBRE = 'porci_empleado_nombre';
 
 const ACCIONES = [
   { tipo: 'concentrado', titulo: 'Concentrado', ayuda: 'Lo que serviste en la tolva', icon: Wheat },
   { tipo: 'medicamento', titulo: 'Medicamento', ayuda: 'Lo que le aplicaste a los cerdos', icon: Syringe },
   { tipo: 'insumo', titulo: 'Insumo', ayuda: 'Viruta, cal, desinfectante…', icon: Package },
-  { tipo: 'peso', titulo: 'Pesaje', ayuda: 'Peso de los cerdos en libras', icon: Scale },
   { tipo: 'baja', titulo: 'Baja', ayuda: 'Cerdos que murieron', icon: Skull }
 ];
 
@@ -26,16 +22,6 @@ const CAUSAS_BAJA = ['Neumonía', 'Diarrea', 'Aplastado', 'Pelea', 'No se sabe']
 
 const CAMPO = 'w-full h-14 px-4 rounded-ds-md border border-line-strong bg-surface-raised text-ink text-[17px] font-semibold outline-none focus:border-primary focus:ring-2 focus:ring-primary/30';
 const ETIQUETA = 'block type-label uppercase text-ink-muted mb-1.5';
-
-const leerNombreGuardado = () => {
-  try { return window.localStorage.getItem(CLAVE_NOMBRE) || ''; } catch { return ''; }
-};
-const guardarNombre = (nombre) => {
-  try {
-    if (nombre) window.localStorage.setItem(CLAVE_NOMBRE, nombre);
-    else window.localStorage.removeItem(CLAVE_NOMBRE);
-  } catch { /* almacenamiento no disponible */ }
-};
 
 const fechaLarga = (iso) => {
   const texto = new Date(`${iso}T12:00:00`).toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -78,43 +64,37 @@ function useHoy() {
   return hoy;
 }
 
-function useDocumento(ref) {
-  const [estado, setEstado] = useState({ datos: null, listo: false });
-  useEffect(() => onSnapshot(
-    ref,
-    (snap) => setEstado({ datos: snap.exists() ? snap.data() : null, listo: true }),
-    () => setEstado({ datos: null, listo: true })
-  ), [ref]);
-  return estado;
+function useCatalogo(ref) {
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState('');
+  const [intento, setIntento] = useState(0);
+  useEffect(() => onSnapshot(ref, { includeMetadataChanges: true }, snap => {
+    setDatos(snap.data() || null);
+    setError(!snap.exists() && !snap.metadata.fromCache
+      ? 'El catálogo está pendiente de publicación. Pedile al administrador que abra Porcicontrol una vez con conexión.'
+      : '');
+  }, err => {
+    setDatos(null);
+    setError(mensajeFirestore(err, 'leer los corrales'));
+  }), [ref, intento]);
+  return { datos, error, reintentar: () => setIntento(i => i + 1) };
 }
 
-function useCapturasDeHoy(hoy) {
-  const [capturas, setCapturas] = useState([]);
-  useEffect(() => {
-    const inicioDelDia = new Date(`${hoy}T00:00:00`).getTime();
-    const consulta = query(colCapturas(db, APP_ID_GRANJA), where('creadaEn', '>=', inicioDelDia), orderBy('creadaEn', 'desc'));
-    return onSnapshot(
-      consulta,
-      { includeMetadataChanges: true },
-      (snap) => setCapturas(snap.docs.map((d) => ({ id: d.id, ...d.data(), sinEnviar: d.metadata.hasPendingWrites }))),
-      () => setCapturas([])
-    );
-  }, [hoy]);
-  return capturas;
+function useMisCapturas(db, appId, uid) {
+  const [estado, setEstado] = useState({ capturas: [], error: '', cargando: true, deCache: false });
+  const [intento, setIntento] = useState(0);
+  useEffect(() => escucharHistorialEmpleado(db, appId, uid,
+    (capturas, deCache) => setEstado({ capturas, deCache, cargando: false, error: '' }),
+    err => setEstado({ capturas: [], cargando: false, deCache: false, error: mensajeFirestore(err, 'leer tu historial') })
+  ), [db, appId, uid, intento]);
+  const reintentar = () => {
+    setEstado(prev => ({ ...prev, cargando: true, error: '' }));
+    setIntento(i => i + 1);
+  };
+  return { ...estado, reintentar };
 }
 
 // --- Piezas de interfaz --------------------------------------------------------
-
-function PantallaCentrada({ children }) {
-  return (
-    <div className="min-h-dvh bg-sidebar text-sidebar-ink flex flex-col items-center justify-center px-5 py-8">
-      <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-20 w-auto mb-4" />
-      <h1 className="type-title text-sidebar-ink">Porcicontrol</h1>
-      <p className="type-label uppercase text-wheat mt-1 mb-6">Registro de granja</p>
-      <div className="w-full max-w-sm bg-surface-raised text-ink rounded-ds-lg shadow-pop p-5">{children}</div>
-    </div>
-  );
-}
 
 function BotonPrincipal({ children, className = '', ...props }) {
   return (
@@ -135,114 +115,6 @@ function Aviso({ tono = 'warning', children }) {
       <AlertTriangle size={18} aria-hidden="true" className="mt-0.5" />
       <span>{children}</span>
     </div>
-  );
-}
-
-function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [entrando, setEntrando] = useState(false);
-
-  const entrar = async (e) => {
-    e.preventDefault();
-    setError('');
-    setEntrando(true);
-    try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-    } catch (err) {
-      const credencialMala = ['auth/invalid-credential', 'auth/user-not-found', 'auth/wrong-password', 'auth/invalid-email'].includes(err?.code);
-      setError(credencialMala
-        ? 'Correo o contraseña incorrectos.'
-        : err?.code === 'auth/network-request-failed'
-          ? 'No hay internet. Conectate para entrar la primera vez.'
-          : 'No se pudo entrar. Probá de nuevo.');
-    } finally {
-      setEntrando(false);
-    }
-  };
-
-  return (
-    <PantallaCentrada>
-      <form onSubmit={entrar} className="space-y-4">
-        <h2 className="type-heading">Entrar</h2>
-        {error && <Aviso tono="danger">{error}</Aviso>}
-        <div>
-          <label htmlFor="emp-correo" className={ETIQUETA}>Correo de la granja</label>
-          <input id="emp-correo" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} className={CAMPO} />
-        </div>
-        <div>
-          <label htmlFor="emp-clave" className={ETIQUETA}>Contraseña</label>
-          <input id="emp-clave" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className={CAMPO} />
-        </div>
-        <BotonPrincipal type="submit" disabled={entrando}>{entrando ? 'Entrando…' : 'Entrar'}</BotonPrincipal>
-      </form>
-    </PantallaCentrada>
-  );
-}
-
-function SinAcceso({ estado, user }) {
-  const mensajes = {
-    [ROL.pendiente]: {
-      titulo: 'Cuenta sin autorizar',
-      texto: 'Esta cuenta todavía no está aprobada. Pedile al encargado que la autorice en Porcicontrol, sección Empleados.'
-    },
-    'sin-conexion': {
-      titulo: 'Hace falta internet',
-      texto: 'Conectate una vez para comprobar el acceso de esta cuenta. Después vas a poder registrar sin señal.'
-    },
-    'sin-reglas': {
-      titulo: 'Falta configurar la granja',
-      texto: 'El encargado todavía no publicó los permisos de la granja (reglas de Firestore).'
-    },
-    error: {
-      titulo: 'No se pudo comprobar el acceso',
-      texto: 'Revisá la conexión y volvé a abrir la app.'
-    }
-  };
-  const { titulo, texto } = mensajes[estado] || mensajes.error;
-  return (
-    <PantallaCentrada>
-      <div className="space-y-4">
-        <h2 className="type-heading">{titulo}</h2>
-        <p className="type-body text-ink-muted">{texto}</p>
-        <p className="type-small text-ink-muted break-all">Cuenta: {user.email}</p>
-        <button type="button" onClick={() => signOut(auth)} className="w-full h-12 rounded-ds-md border border-line-strong type-strong flex items-center justify-center gap-2">
-          <LogOut size={16} aria-hidden="true" /> Salir
-        </button>
-      </div>
-    </PantallaCentrada>
-  );
-}
-
-function ElegirNombre({ nombres, onElegir }) {
-  const [texto, setTexto] = useState('');
-  return (
-    <PantallaCentrada>
-      <div className="space-y-4">
-        <div>
-          <h2 className="type-heading">¿Quién sos?</h2>
-          <p className="type-body text-ink-muted mt-1">Tu nombre queda en cada registro que hagás.</p>
-        </div>
-        {nombres.length > 0 ? (
-          <div className="space-y-2.5">
-            {nombres.map((nombre) => (
-              <button key={nombre} type="button" onClick={() => onElegir(nombre)} className="w-full min-h-14 px-4 rounded-ds-md border border-line-strong bg-surface-raised text-[17px] font-bold text-left flex items-center gap-3 hover:bg-surface-sunken">
-                <UserRound size={20} aria-hidden="true" className="text-primary" /> {nombre}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <form onSubmit={(e) => { e.preventDefault(); if (texto.trim()) onElegir(texto.trim()); }} className="space-y-3">
-            <div>
-              <label htmlFor="emp-nombre" className={ETIQUETA}>Tu nombre</label>
-              <input id="emp-nombre" value={texto} onChange={(e) => setTexto(e.target.value)} maxLength={60} required className={CAMPO} />
-            </div>
-            <BotonPrincipal type="submit">Continuar</BotonPrincipal>
-          </form>
-        )}
-      </div>
-    </PantallaCentrada>
   );
 }
 
@@ -320,13 +192,12 @@ const datosIniciales = (tipo) => {
   if (tipo === 'concentrado') return { alimento: '', cantidad: '', unidad: 'sacos', nota: '' };
   if (tipo === 'medicamento') return { productoId: '', nombre: '', unidad: '', cantidad: '', nota: '' };
   if (tipo === 'insumo') return { productoId: '', nombre: '', unidad: '', cantidad: '', nota: '' };
-  if (tipo === 'peso') return { pesos: [''], nota: '' };
   return { cantidad: '1', causa: '', nota: '' };
 };
 
 const OTRO = '__otro__';
 
-function Formulario({ accion, catalogo, hoy, empleado, uid, onGuardado, onVolver }) {
+function Formulario({ db, appId, onError, accion, catalogo, hoy, empleado, uid, onGuardado, onVolver }) {
   const { tipo } = accion;
   const [corral, setCorral] = useState(null);
   const [fecha, setFecha] = useState(hoy);
@@ -353,9 +224,6 @@ function Formulario({ accion, catalogo, hoy, empleado, uid, onGuardado, onVolver
     cambiar({ productoId: id, nombre: producto?.nombre || '', unidad: producto?.unidad || '' });
   };
 
-  const pesosValidos = tipo === 'peso' ? datos.pesos.map((p) => parseFloat(String(p).replace(',', '.'))).filter((p) => p > 0) : [];
-  const promedio = pesosValidos.length > 0 ? pesosValidos.reduce((s, p) => s + p, 0) / pesosValidos.length : 0;
-
   const guardar = (e) => {
     e.preventDefault();
     const resultado = construirCaptura({
@@ -373,8 +241,8 @@ function Formulario({ accion, catalogo, hoy, empleado, uid, onGuardado, onVolver
     }
     // No se espera la respuesta del servidor: sin señal, Firestore guarda la
     // captura en el teléfono y la envía sola cuando vuelve la conexión.
-    const ref = doc(colCapturas(db, APP_ID_GRANJA));
-    setDoc(ref, resultado.captura).catch((err) => console.error('No se pudo guardar la captura:', err));
+    const ref = doc(colCapturas(db, appId));
+    setDoc(ref, resultado.captura).catch(() => onError('No se pudo enviar el registro. Revisá tu acceso y volvé a ingresarlo.'));
     onGuardado(resultado.captura);
   };
 
@@ -435,41 +303,6 @@ function Formulario({ accion, catalogo, hoy, empleado, uid, onGuardado, onVolver
         </>
       )}
 
-      {tipo === 'peso' && (
-        <div>
-          <span className={ETIQUETA}>Peso de cada cerdo (libras)</span>
-          <div className="space-y-2.5">
-            {datos.pesos.map((peso, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <span className="w-8 type-data text-ink-muted text-right">{idx + 1}.</span>
-                <input
-                  aria-label={`Peso del cerdo ${idx + 1} en libras`}
-                  inputMode="decimal"
-                  autoComplete="off"
-                  value={peso}
-                  placeholder="0"
-                  onChange={(e) => cambiar({ pesos: datos.pesos.map((p, i) => (i === idx ? e.target.value : p)) })}
-                  className={`${CAMPO} font-data text-[20px]`}
-                />
-                {datos.pesos.length > 1 && (
-                  <button type="button" aria-label={`Quitar el cerdo ${idx + 1}`} onClick={() => cambiar({ pesos: datos.pesos.filter((_, i) => i !== idx) })} className="h-14 w-12 shrink-0 rounded-ds-md border border-line-strong bg-surface-raised flex items-center justify-center text-danger">
-                    <Trash2 size={18} aria-hidden="true" />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          <button type="button" onClick={() => cambiar({ pesos: [...datos.pesos, ''] })} className="mt-3 w-full h-12 rounded-ds-md border border-dashed border-line-strong type-strong flex items-center justify-center gap-2">
-            <Plus size={18} aria-hidden="true" /> Pesar otro cerdo
-          </button>
-          {pesosValidos.length > 0 && (
-            <p className="mt-3 type-body text-ink-muted">
-              Promedio: <span className="type-data-lg text-ink">{promedio.toFixed(1)} lb</span> · {pesosValidos.length} {pesosValidos.length === 1 ? 'cerdo' : 'cerdos'}
-            </p>
-          )}
-        </div>
-      )}
-
       {tipo === 'baja' && (
         <>
           <CampoCantidad id="emp-cantidad" etiqueta="¿Cuántos murieron?" valor={datos.cantidad} onCambio={(cantidad) => cambiar({ cantidad })} sufijo="cerdos" />
@@ -501,7 +334,7 @@ function Formulario({ accion, catalogo, hoy, empleado, uid, onGuardado, onVolver
       <div className="fixed inset-x-0 bottom-0 z-20 bg-surface border-t border-line px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <div className="max-w-xl mx-auto space-y-2.5">
           {error && <Aviso tono="danger">{error}</Aviso>}
-          <BotonPrincipal type="submit"><Check size={22} aria-hidden="true" /> Guardar</BotonPrincipal>
+          <BotonPrincipal type="submit"><Check size={22} aria-hidden="true" /> Enviar a revisión</BotonPrincipal>
         </div>
       </div>
 
@@ -525,7 +358,7 @@ function EstadoCaptura({ captura }) {
   return <span className="inline-flex items-center gap-1 type-small text-ink-muted"><Clock size={13} aria-hidden="true" /> En revisión</span>;
 }
 
-function FilaCaptura({ captura }) {
+function FilaCaptura({ db, appId, captura, onError }) {
   const [confirmando, setConfirmando] = useState(false);
   const Icono = ACCIONES.find((a) => a.tipo === captura.tipo)?.icon || Package;
   const sePuedeBorrar = captura.estado === ESTADO_CAPTURA.pendiente;
@@ -540,7 +373,7 @@ function FilaCaptura({ captura }) {
           <p className="type-strong text-ink">{captura.corralNombre} · {ETIQUETA_TIPO[captura.tipo]}</p>
           <p className="type-body text-ink-muted">{describirCaptura(captura)}</p>
           <p className="type-small text-ink-muted mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
-            <span>{captura.empleado} · {horaCorta(captura.creadaEn)}</span>
+            <span>{captura.fecha} · {horaCorta(captura.creadaEn)}</span>
             <EstadoCaptura captura={captura} />
           </p>
           {captura.estado === ESTADO_CAPTURA.rechazada && captura.motivoRechazo && (
@@ -557,57 +390,74 @@ function FilaCaptura({ captura }) {
         <div className="mt-2.5 flex items-center gap-2.5">
           <p className="flex-1 type-small text-ink-muted">¿Borrar este registro?</p>
           <button type="button" onClick={() => setConfirmando(false)} className="h-11 px-4 rounded-ds-md border border-line-strong type-strong">No</button>
-          <button type="button" onClick={() => deleteDoc(doc(colCapturas(db, APP_ID_GRANJA), captura.id)).catch(() => undefined)} className="h-11 px-4 rounded-ds-md bg-danger text-surface-raised type-strong">Sí, borrar</button>
+          <button type="button" onClick={() => deleteDoc(doc(colCapturas(db, appId), captura.id)).catch(() => onError('No se pudo retirar el registro. Comprobá si ya fue revisado.'))} className="h-11 px-4 rounded-ds-md bg-danger text-surface-raised type-strong">Sí, borrar</button>
         </div>
       )}
     </li>
   );
 }
 
-function Inicio({ empleado, hoy, capturas, catalogoListo, hayCorrales, onAccion }) {
+function Consulta({ titulo, children }) {
   return (
-    <div className="space-y-6">
-      <div>
-        <p className="type-small text-ink-muted">{fechaLarga(hoy)}</p>
-        <h1 className="type-title text-ink">Hola, {empleado}</h1>
-      </div>
+    <details className="group">
+      <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 font-semibold [&::-webkit-details-marker]:hidden">
+        {titulo}<ChevronDown size={17} aria-hidden="true" className="text-ink-muted group-open:rotate-180" />
+      </summary>
+      <div className="border-t border-line px-4">{children}</div>
+    </details>
+  );
+}
 
-      {catalogoListo && !hayCorrales && (
-        <Aviso>Todavía no hay corrales publicados. El encargado tiene que abrir Porcicontrol con internet una vez.</Aviso>
-      )}
+function Inicio({ db, appId, onError, historial, catalogo, errorCatalogo, reintentar, enLinea, hoy, catalogoListo, onAccion }) {
+  const { concentrados, corrales } = catalogo;
+  const hayCorrales = corrales.some(c => c.loteId);
+  const sinCatalogo = errorCatalogo ? 'Catálogo sin consultar.' : enLinea ? 'Cargando catálogo…' : 'Sin catálogo en este dispositivo.';
+  let estadoHistorial = '';
+  if (historial.cargando || (historial.deCache && enLinea && !historial.capturas.length)) estadoHistorial = 'Cargando registros…';
+  else if (!historial.capturas.length) estadoHistorial = historial.deCache ? 'Sin registros guardados en este dispositivo.' : 'Todavía no enviaste registros.';
 
+  return (
+    <div className="space-y-5">
       <section aria-labelledby="emp-registrar">
-        <h2 id="emp-registrar" className="type-label uppercase text-ink-muted mb-2">¿Qué vas a registrar?</h2>
-        <div className="grid grid-cols-2 gap-3">
-          {ACCIONES.map((accion, idx) => (
-            <button
-              key={accion.tipo}
-              type="button"
-              disabled={!hayCorrales}
-              onClick={() => onAccion(accion)}
-              className={`min-h-[6.5rem] p-4 rounded-ds-lg border shadow-card text-left flex flex-col justify-between gap-3 disabled:opacity-50 transition-colors ${idx === 0 ? 'col-span-2 bg-primary text-on-primary border-primary hover:bg-primary-hover' : 'bg-surface-raised text-ink border-line hover:border-primary'}`}
-            >
-              <accion.icon size={28} aria-hidden="true" className={idx === 0 ? 'text-wheat' : 'text-primary'} />
-              <span>
-                <span className="block text-[18px] font-bold leading-tight">{accion.titulo}</span>
-                <span className={`block type-small mt-0.5 ${idx === 0 ? 'text-forest-200' : 'text-ink-muted'}`}>{accion.ayuda}</span>
-              </span>
+        <p className="type-small text-ink-muted">{fechaLarga(hoy)}</p>
+        <h1 id="emp-registrar" className="type-title mb-3">Registrar en corral</h1>
+        {errorCatalogo && <div className="mb-3"><Aviso>{errorCatalogo} <button type="button" className="underline" onClick={reintentar}>Reintentar</button></Aviso></div>}
+        <div className="grid grid-cols-2 gap-2">
+          {ACCIONES.map(accion => (
+            <button key={accion.tipo} type="button" disabled={!hayCorrales} onClick={() => onAccion(accion)}
+              className="flex min-h-14 items-center gap-2 rounded-ds-md border border-line-strong bg-surface-raised px-3 text-left type-strong hover:border-primary focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50">
+              <accion.icon size={20} aria-hidden="true" className="shrink-0 text-primary" />{accion.titulo}
             </button>
           ))}
         </div>
+        {!hayCorrales && !errorCatalogo && <p role="status" className="mt-2 type-small text-ink-muted">{catalogoListo ? 'Necesitás un corral con lote activo para registrar.' : sinCatalogo}</p>}
       </section>
 
-      <section aria-labelledby="emp-hoy">
-        <h2 id="emp-hoy" className="type-label uppercase text-ink-muted mb-2">Registrado hoy</h2>
-        <div className="rounded-ds-lg border border-line bg-surface-raised shadow-card">
-          {capturas.length === 0 ? (
-            <p className="px-4 py-6 type-body text-ink-muted text-center">Todavía no hay registros hoy.</p>
-          ) : (
-            <ul className="divide-y divide-line">
-              {capturas.map((captura) => <FilaCaptura key={captura.id} captura={captura} />)}
-            </ul>
-          )}
-        </div>
+      <div className="divide-y divide-line rounded-ds-md border border-line bg-surface-raised">
+        <Consulta titulo="Corrales">
+          {corrales.length ? <ul className="divide-y divide-line">{corrales.map(c => (
+            <li key={c.id} className="py-2">
+              <p className="type-strong">{c.nombre}</p>
+              <p className="type-small text-ink-muted">{c.loteId ? [c.loteNombre, c.cerdos + ' cerdos', 'Etapa ' + c.fase, c.alimentoSugerido].filter(Boolean).join(' · ') : 'Sin lote activo'}</p>
+            </li>
+          ))}</ul> : <p className="py-3 type-small">{catalogoListo ? 'Sin corrales registrados.' : sinCatalogo}</p>}
+        </Consulta>
+        <Consulta titulo="Concentrado en bodega">
+          {concentrados.length ? <ul className="divide-y divide-line">{concentrados.map(item => (
+            <li key={item.nombre} className="flex items-baseline justify-between gap-3 py-2">
+              <span className="type-body">{item.nombre}</span><span className="type-data shrink-0">{item.stockLbs == null ? 'Por actualizar' : item.stockLbs.toLocaleString('es-GT', { maximumFractionDigits: 2 }) + ' lb'}</span>
+            </li>
+          ))}</ul> : <p className="py-3 type-small">{catalogoListo ? 'Sin concentrado publicado.' : sinCatalogo}</p>}
+        </Consulta>
+      </div>
+
+      <section aria-labelledby="emp-historial">
+        <h2 id="emp-historial" className="type-heading mb-2">Mis registros</h2>
+        {historial.error ? <Aviso>{historial.error} <button type="button" onClick={historial.reintentar} className="underline">Reintentar</button></Aviso>
+          : estadoHistorial ? <p role="status" className="type-body text-ink-muted">{estadoHistorial}</p>
+          : <ul className="divide-y divide-line rounded-ds-md border border-line bg-surface-raised">
+              {historial.capturas.map(c => <FilaCaptura db={db} appId={appId} onError={onError} key={c.id} captura={c} />)}
+            </ul>}
       </section>
     </div>
   );
@@ -615,16 +465,14 @@ function Inicio({ empleado, hoy, capturas, catalogoListo, hayCorrales, onAccion 
 
 // --- App -------------------------------------------------------------------------
 
-function Registro({ user }) {
+export default function RegistroEmpleado({ db, appId, user, onSalir }) {
   const hoy = useHoy();
   const enLinea = useEnLinea();
-  const refCatalogo = useMemo(() => refCatalogoEmpleados(db, APP_ID_GRANJA), []);
-  const refNombres = useMemo(() => refPersonal(db, APP_ID_GRANJA), []);
-  const { datos: catalogoCrudo, listo: catalogoListo } = useDocumento(refCatalogo);
-  const { datos: personal, listo: personalListo } = useDocumento(refNombres);
-  const capturas = useCapturasDeHoy(hoy);
-
-  const [empleado, setEmpleado] = useState(leerNombreGuardado);
+  const refCatalogo = useMemo(() => refCatalogoEmpleados(db, appId), [db, appId]);
+  const { datos: catalogoCrudo, error: errorCatalogo, reintentar } = useCatalogo(refCatalogo);
+  const historial = useMisCapturas(db, appId, user.uid);
+  const empleado = user.email || user.uid;
+  const [errorEnvio, setErrorEnvio] = useState('');
   const [accion, setAccion] = useState(null);
   const [mensaje, setMensaje] = useState('');
 
@@ -634,8 +482,7 @@ function Registro({ user }) {
     medicamentos: Array.isArray(catalogoCrudo?.medicamentos) ? catalogoCrudo.medicamentos : [],
     insumos: Array.isArray(catalogoCrudo?.insumos) ? catalogoCrudo.insumos : []
   }), [catalogoCrudo]);
-  const nombres = useMemo(() => (Array.isArray(personal?.nombres) ? personal.nombres.filter(Boolean) : []), [personal]);
-  const sinEnviar = capturas.filter((c) => c.sinEnviar).length;
+  const sinEnviar = historial.capturas.filter((c) => c.sinEnviar).length;
 
   useEffect(() => {
     if (!mensaje) return undefined;
@@ -643,27 +490,16 @@ function Registro({ user }) {
     return () => clearTimeout(temporizador);
   }, [mensaje]);
 
-  const elegirEmpleado = (nombre) => {
-    guardarNombre(nombre);
-    setEmpleado(nombre);
-  };
-
-  if (!empleado) {
-    if (!personalListo) return <Cargando />;
-    return <ElegirNombre nombres={nombres} onElegir={elegirEmpleado} />;
-  }
-
   return (
     <div className="min-h-dvh bg-surface text-ink">
       <header className="sticky top-0 z-30 bg-sidebar text-sidebar-ink pt-[env(safe-area-inset-top)]">
         <div className="max-w-xl mx-auto h-14 px-4 flex items-center gap-3">
           <img src={marcaGuerraFarm} alt="" className="h-9 w-auto" />
-          <button type="button" onClick={() => { setAccion(null); elegirEmpleado(''); }} className="flex-1 h-11 flex items-center gap-2 text-left" aria-label={`Registrando como ${empleado}. Cambiar de persona`}>
+          <div className="flex-1 flex items-center gap-2 truncate">
             <UserRound size={18} aria-hidden="true" className="text-wheat" />
             <span className="type-strong truncate">{empleado}</span>
-            <span className="type-small text-sidebar-muted underline underline-offset-2">cambiar</span>
-          </button>
-          <button type="button" onClick={() => signOut(auth)} aria-label="Cerrar sesión" className="h-11 w-11 rounded-ds-md flex items-center justify-center hover:bg-sidebar-active">
+          </div>
+          <button type="button" onClick={onSalir} aria-label="Cerrar sesión" className="h-11 w-11 rounded-ds-md flex items-center justify-center hover:bg-sidebar-active">
             <LogOut size={18} aria-hidden="true" />
           </button>
         </div>
@@ -680,8 +516,10 @@ function Registro({ user }) {
       </header>
 
       <main className="max-w-xl mx-auto px-4 py-5">
+        {errorEnvio && <Aviso tono="danger">{errorEnvio}</Aviso>}
         {accion ? (
           <Formulario
+            db={db} appId={appId} onError={setErrorEnvio}
             key={accion.tipo}
             accion={accion}
             catalogo={catalogo}
@@ -691,18 +529,17 @@ function Registro({ user }) {
             onVolver={() => setAccion(null)}
             onGuardado={(captura) => {
               setAccion(null);
-              setMensaje(`Guardado: ${captura.corralNombre} · ${describirCaptura(captura)}`);
+              setMensaje(`Registrado para revisión: ${captura.corralNombre} · ${describirCaptura(captura)}`);
               window.scrollTo({ top: 0 });
             }}
           />
         ) : (
           <Inicio
-            empleado={empleado}
+            db={db} appId={appId} onError={setErrorEnvio} historial={historial} catalogo={catalogo}
+            errorCatalogo={errorCatalogo} reintentar={reintentar} enLinea={enLinea}
             hoy={hoy}
-            capturas={capturas}
-            catalogoListo={catalogoListo}
-            hayCorrales={catalogo.corrales.some((c) => c.loteId)}
-            onAccion={setAccion}
+            catalogoListo={Boolean(catalogoCrudo)}
+            onAccion={(nueva) => { setErrorEnvio(''); setAccion(nueva); window.scrollTo({ top: 0 }); }}
           />
         )}
       </main>
@@ -714,27 +551,4 @@ function Registro({ user }) {
       )}
     </div>
   );
-}
-
-function Cargando() {
-  return (
-    <div className="min-h-dvh bg-sidebar text-sidebar-ink flex flex-col items-center justify-center">
-      <img src={marcaGuerraFarm} alt="Guerra Farm" className="h-20 w-auto mb-4" />
-      <p className="type-strong">Cargando…</p>
-    </div>
-  );
-}
-
-export default function EmpleadosApp() {
-  const [sesion, setSesion] = useState({ user: null, lista: false });
-  useEffect(() => onAuthStateChanged(auth, (user) => setSesion({ user, lista: true })), []);
-  const acceso = useAcceso(db, APP_ID_GRANJA, sesion.user);
-
-  if (!sesion.lista) return <Cargando />;
-  if (!sesion.user) return <Login />;
-  if (acceso.estado === 'cargando') return <Cargando />;
-  if (acceso.estado !== ROL.empleado && acceso.estado !== ROL.admin) {
-    return <SinAcceso estado={acceso.estado} user={sesion.user} />;
-  }
-  return <Registro user={sesion.user} />;
 }

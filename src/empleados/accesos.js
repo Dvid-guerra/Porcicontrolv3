@@ -1,25 +1,18 @@
-// ============================================================================
-// ACCESOS Y RUTAS COMPARTIDAS ENTRE LA APP PRINCIPAL Y LA APP DE EMPLEADOS
-// ----------------------------------------------------------------------------
-// Cada cuenta tiene un documento en artifacts/{appId}/members/{uid}:
-//   { active: boolean, role: 'admin' | 'empleado' | 'pendiente', email, nombre }
-// - admin:    entra a la app principal (y puede probar la de empleados).
-// - empleado: solo entra a la app de empleados; Firestore le niega lo demás.
-// - pendiente (o sin documento): no entra a nada hasta que un admin lo apruebe.
-// Lo que ves aquí es la parte visual; quien de verdad bloquea es firestore.rules.
-// ============================================================================
-
 import { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
-
-export const APP_ID_GRANJA = 'agrocontrol-local';
+import { collection, doc, onSnapshot, runTransaction } from 'firebase/firestore';
 
 export const ROL = { admin: 'admin', empleado: 'empleado', pendiente: 'pendiente' };
 
+export function mensajeFirestore(err, accion) {
+  if (err?.code === 'permission-denied') return 'Firebase denegó el permiso para ' + accion + '. Revisá las reglas publicadas y el rol de la cuenta.';
+  return 'No se pudo ' + accion + '. Revisá la conexión y volvé a intentar.';
+}
+
 export const refMiembro = (db, appId, uid) => doc(db, 'artifacts', appId, 'members', uid);
+export const colInvitaciones = (db, appId) => collection(db, 'artifacts', appId, 'invitaciones');
+export const refInvitacion = (db, appId, email) => doc(colInvitaciones(db, appId), email.trim().toLowerCase());
 export const colMiembros = (db, appId) => collection(db, 'artifacts', appId, 'members');
 export const refCatalogoEmpleados = (db, appId) => doc(db, 'artifacts', appId, 'public', 'data', 'granja_empleados', 'catalogo');
-export const refPersonal = (db, appId) => doc(db, 'artifacts', appId, 'public', 'data', 'granja_empleados', 'personal');
 export const colCapturas = (db, appId) => collection(db, 'artifacts', appId, 'public', 'data', 'granja_capturas');
 
 // Misma regla que firestore.rules: activo sin rol cuenta como admin (membresías
@@ -27,7 +20,7 @@ export const colCapturas = (db, appId) => collection(db, 'artifacts', appId, 'pu
 export function resolverRol(datosMiembro) {
   if (!datosMiembro || datosMiembro.active !== true) return ROL.pendiente;
   if (datosMiembro.role === ROL.empleado) return ROL.empleado;
-  if (datosMiembro.role === undefined || datosMiembro.role === null || datosMiembro.role === ROL.admin) return ROL.admin;
+  if (datosMiembro.role === undefined || datosMiembro.role === ROL.admin) return ROL.admin;
   return ROL.pendiente;
 }
 
@@ -45,7 +38,7 @@ export function useAcceso(db, appId, user) {
 
   useEffect(() => {
     if (!uid) {
-      setAcceso({ estado: 'cargando', error: '' });
+      setAcceso({ uid, estado: 'cargando', error: '' });
       return undefined;
     }
 
@@ -56,33 +49,35 @@ export function useAcceso(db, appId, user) {
       ref,
       { includeMetadataChanges: true },
       (snap) => {
+        if (snap.metadata.hasPendingWrites) {
+          setAcceso({ uid, estado: ROL.pendiente, error: '' });
+          return;
+        }
         if (snap.exists()) {
-          setAcceso({ estado: resolverRol(snap.data()), error: '' });
+          setAcceso({ uid, estado: resolverRol(snap.data()), error: '' });
           return;
         }
         // Sin documento en caché no se puede saber si la cuenta está aprobada.
         if (snap.metadata.fromCache) {
-          setAcceso({ estado: 'sin-conexion', error: '' });
+          setAcceso({ uid, estado: 'sin-conexion', error: '' });
           return;
         }
-        setAcceso({ estado: ROL.pendiente, error: '' });
+        setAcceso({ uid, estado: ROL.pendiente, error: '' });
         if (solicitudEnviada) return;
         solicitudEnviada = true;
-        setDoc(ref, {
-          active: false,
-          role: ROL.pendiente,
-          email,
-          nombre,
-          solicitadoEn: Date.now()
+        runTransaction(db, async tx => {
+          if ((await tx.get(ref)).exists()) return;
+          tx.set(ref, { active: false, role: ROL.pendiente, email, nombre, solicitadoEn: Date.now() });
         }).catch((err) => {
-          if (err?.code === 'permission-denied') setAcceso({ estado: 'sin-reglas', error: err.code });
+          solicitudEnviada = false;
+          setAcceso({ uid, estado: err.code === 'permission-denied' ? 'sin-reglas' : 'error', error: err.code });
         });
       },
       (err) => {
-        setAcceso({ estado: err?.code === 'permission-denied' ? 'sin-reglas' : 'error', error: err?.code || 'desconocido' });
+        setAcceso({ uid, estado: err?.code === 'permission-denied' ? 'sin-reglas' : 'error', error: err?.code || 'desconocido' });
       }
     );
   }, [db, appId, uid, email, nombre]);
 
-  return acceso;
+  return acceso.uid === uid ? acceso : { estado: 'cargando', error: '' };
 }

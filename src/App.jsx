@@ -61,9 +61,12 @@ import {
   formatearOrdenCompraWhatsApp,
   formatearFichaCorralWhatsApp
 } from './domain/whatsappReports.js';
-import { aplicarCapturas, construirCatalogoEmpleados } from './domain/capturasEmpleado.js';
+import { aprobarRegistros } from './empleados/revisionRegistros.js';
+import { calcularInventarioCentral, calcularInventarioProductos } from './domain/inventario.js';
+import { CORRALES_INICIALES, INITIAL_CATALOGO, INITIAL_CATALOGO_MEDICO, INITIAL_CATALOGO_INSUMOS, CRONOGRAMA_ALIMENTACION } from './domain/granja/catalogosIniciales.js';
 import { ROL, useAcceso } from './empleados/accesos.js';
-import { useCapturasPendientes, useSincronizarCatalogoEmpleados } from './empleados/adminEmpleados.js';
+import { usePublicacionCatalogo, useCapturasPendientes } from './empleados/adminEmpleados.js';
+import RegistroEmpleado from './empleados/RegistroEmpleado.jsx';
 import PanelEmpleados from './empleados/PanelEmpleados.jsx';
 import AccesoRestringido from './empleados/AccesoRestringido.jsx';
 
@@ -172,70 +175,10 @@ const VISTA_PADRE = {
 
 // --- DATOS POR DEFECTO ---
 
-// --- MOCK DATA PARA DESARROLLO LOCAL ---
-const MOCK_LOTES = [
-  { id: 'lote1', corralId: 'c1', nombre: 'Lote Duroc 01', cantidadInicial: 15, cantidadActual: 15, cantidad: 15, fechaInicio: '2026-05-10', fechaIngreso: '2026-05-10', estado: 'Activo', pesoInicial: 35, faseActual: 4 },
-  { id: 'lote2', corralId: 'c2', nombre: 'Lote Pietrain 02', cantidadInicial: 12, cantidadActual: 11, cantidad: 12, fechaIngreso: '2026-06-01', fechaInicio: '2026-06-01', estado: 'Activo', pesoInicial: 38, faseActual: 2 },
-];
-const MOCK_PESOS = [
-  { id: 'p1', loteId: 'lote1', peso: 45, fecha: '2026-05-20', cantidadCerdos: 15, tipo: 'promedio' },
-  { id: 'p2', loteId: 'lote1', peso: 68, fecha: '2026-06-05', cantidadCerdos: 15, tipo: 'promedio' },
-  { id: 'p3', loteId: 'lote1', peso: 105, fecha: '2026-06-25', cantidadCerdos: 15, tipo: 'promedio' },
-  { id: 'p4', loteId: 'lote2', peso: 42, fecha: '2026-06-15', cantidadCerdos: 11, tipo: 'promedio' },
-];
-const MOCK_ALIMENTOS = [
-  { id: 'a1', loteId: 'lote1', fecha: '2026-05-15', tipo: 'VITALECHON 1', sacos: 2, libras: 100, costo: 788, categoria: 'concentrado' },
-  { id: 'a2', loteId: 'lote1', fecha: '2026-06-10', tipo: 'VITALECHON 3', sacos: 3, libras: 150, costo: 666, categoria: 'concentrado' },
-  { id: 'a3', loteId: 'lote2', fecha: '2026-06-05', tipo: 'VITALECHON 1', sacos: 1, libras: 50, costo: 394, categoria: 'concentrado' },
-];
-const MOCK_COMPRAS = [
-  { id: 'c1', fecha: '2026-05-01', tipo: 'VITALECHON 1', sacos: 10, costoTotal: 3940, categoria: 'concentrado' },
-  { id: 'c2', fecha: '2026-05-15', tipo: 'VITALECHON 2', sacos: 15, costoTotal: 4335, categoria: 'concentrado' },
-  { id: 'c3', fecha: '2026-06-01', tipo: 'MAÍZ AMARILLO', sacos: 20, costoTotal: 3200, categoria: 'ingrediente' },
-];
-
-const INITIAL_CATALOGO = [
-  { id: 'vl1', nombre: 'VITALECHON 1', precioSaco: 394, librasPorSaco: 50 },
-  { id: 'vl2', nombre: 'VITALECHON 2', precioSaco: 289, librasPorSaco: 50 },
-  { id: 'vl3', nombre: 'VITALECHON 3', precioSaco: 222, librasPorSaco: 50 },
-  { id: 'vl4', nombre: 'VITALECHON 4', precioSaco: 326, librasPorSaco: 50 },
-  { id: 'vc1', nombre: 'VITACERDO 1', precioSaco: 294, librasPorSaco: 100 },
-  { id: 'vc2', nombre: 'VITACERDO 2', precioSaco: 264, librasPorSaco: 100 },
-  { id: 'vc3', nombre: 'VITACERDO 3', precioSaco: 259, librasPorSaco: 100 },
-];
-
 const INITIAL_INGREDIENTES = [
   { id: 'ing1', nombre: 'MAÍZ AMARILLO', precioSaco: 160, librasPorSaco: 100 },
   { id: 'ing2', nombre: 'SOYA', precioSaco: 280, librasPorSaco: 100 },
   { id: 'ing3', nombre: 'MELAZA', precioSaco: 100, librasPorSaco: 58.4 },
-];
-
-const INITIAL_CATALOGO_MEDICO = [
-  { id: 'med1', nombre: 'Electrolitos orales', categoria: 'Hidratación', unidad: 'sobre', stockMinimo: 2, diasAlertaVencimiento: 30 },
-  { id: 'med2', nombre: 'Multivitamínico oral', categoria: 'Vitaminado', unidad: 'frasco', stockMinimo: 1, diasAlertaVencimiento: 45 },
-  { id: 'med3', nombre: 'Fenbendazol', categoria: 'Desparasitación', unidad: 'frasco', stockMinimo: 1, diasAlertaVencimiento: 45 },
-  { id: 'med4', nombre: 'Ivermectina / Doramectina', categoria: 'Antiparasitario', unidad: 'frasco', stockMinimo: 1, diasAlertaVencimiento: 45 },
-  { id: 'med5', nombre: 'Desinfectante de instalaciones', categoria: 'Bioseguridad', unidad: 'galón', stockMinimo: 1, diasAlertaVencimiento: 60 },
-];
-
-// Materiales de manejo que se compran a bodega y se consumen por corral: no son
-// alimento ni medicina, pero cuestan plata y hay que saber cuánto queda.
-const INITIAL_CATALOGO_INSUMOS = [
-  { id: 'ins1', nombre: 'Viruta / aserrín', categoria: 'Cama', unidad: 'saco', stockMinimo: 5 },
-  { id: 'ins2', nombre: 'Cal hidratada', categoria: 'Bioseguridad', unidad: 'saco', stockMinimo: 2 },
-  { id: 'ins3', nombre: 'Desinfectante de corrales', categoria: 'Bioseguridad', unidad: 'galón', stockMinimo: 1 },
-  { id: 'ins4', nombre: 'Guantes desechables', categoria: 'Manejo', unidad: 'caja', stockMinimo: 1 },
-  { id: 'ins5', nombre: 'Jeringas y agujas', categoria: 'Manejo', unidad: 'paquete', stockMinimo: 2 }
-];
-
-const CRONOGRAMA_ALIMENTACION = [
-  { fase: 1, alimento: 'VITALECHON 1', diaInicio: 1, diaFin: 11, consumoTotalLb: 6.6 },
-  { fase: 2, alimento: 'VITALECHON 2', diaInicio: 12, diaFin: 21, consumoTotalLb: 11.0 },
-  { fase: 3, alimento: 'VITALECHON 3', diaInicio: 22, diaFin: 28, consumoTotalLb: 11.0 },
-  { fase: 4, alimento: 'VITALECHON 4', diaInicio: 29, diaFin: 49, consumoTotalLb: 48.4 },
-  { fase: 5, alimento: 'VITACERDO 1', diaInicio: 50, diaFin: 70, consumoTotalLb: 74.8 },
-  { fase: 6, alimento: 'VITACERDO 2', diaInicio: 71, diaFin: 105, consumoTotalLb: 175.1 },
-  { fase: 7, alimento: 'VITACERDO 3', diaInicio: 106, diaFin: 133, consumoTotalLb: 169.5 },
 ];
 
 const INITIAL_PROTOCOLO_SANITARIO = [
@@ -668,20 +611,15 @@ function Porcicontrol({ user, db, appId }) {
   const [formulasEtapas, setFormulasEtapas, l4] = useCloudStorage('agro_formulas_etapas', Array.from({ length: 7 }, (_, i) => ({ fase: i + 1, ingredientes: [] })), user, db, appId);
   const [pesoAlertaMezcla, setPesoAlertaMezcla, l5] = useCloudStorage('agro_peso_alerta', 100, user, db, appId);
 
-  const [corrales, setCorrales, l7] = useCloudStorage('agro_corrales', [
-    { id: 'c1', nombre: 'Corral 1', capacidad: 15 },
-    { id: 'c2', nombre: 'Corral 2', capacidad: 15 },
-    { id: 'c3', nombre: 'Corral 3', capacidad: 15 },
-    { id: 'c4', nombre: 'Corral 4', capacidad: 15 },
-  ], user, db, appId);
+  const [corrales, setCorrales, l7] = useCloudStorage('agro_corrales', CORRALES_INICIALES, user, db, appId);
 
-  const [lotes, setLotes, l8] = useCloudStorage('agro_lotes', window.location.hostname === 'localhost' ? MOCK_LOTES : [], user, db, appId);
-  const [pesos, setPesos, l9] = useCloudStorage('agro_pesos', window.location.hostname === 'localhost' ? MOCK_PESOS : [], user, db, appId);
-  const [alimentos, setAlimentos, l10] = useCloudStorage('agro_alimentos', window.location.hostname === 'localhost' ? MOCK_ALIMENTOS : [], user, db, appId);
+  const [lotes, setLotes, l8] = useCloudStorage('agro_lotes', [], user, db, appId);
+  const [pesos, setPesos, l9] = useCloudStorage('agro_pesos', [], user, db, appId);
+  const [alimentos, setAlimentos, l10] = useCloudStorage('agro_alimentos', [], user, db, appId);
   const [vacunas, setVacunas, l11] = useCloudStorage('agro_vacunas', [], user, db, appId);
   const [bajas, setBajas, l12] = useCloudStorage('agro_bajas', [], user, db, appId);
   const [gastosExtra, setGastosExtra, l13] = useCloudStorage('agro_gastosextra', [], user, db, appId);
-  const [comprasBodega, setComprasBodega, l14] = useCloudStorage('agro_bodega', window.location.hostname === 'localhost' ? MOCK_COMPRAS : [], user, db, appId);
+  const [comprasBodega, setComprasBodega, l14] = useCloudStorage('agro_bodega', [], user, db, appId);
   const [tareasSanidad, setTareasSanidad, l15] = useCloudStorage('agro_tareassanidad', [], user, db, appId);
   const [ventas, setVentas, l16] = useCloudStorage('agro_ventas', [], user, db, appId);
   const [constanteSchaeffer, setConstanteSchaeffer, l17] = useCloudStorage('agro_constante_schaeffer', 400, user, db, appId);
@@ -1687,84 +1625,24 @@ ${JSON.stringify(contextoGranja)}`;
   };
 
   // --- LÓGICA ERP: BODEGA CENTRAL UNIFICADA ---
-  const inventarioCentral = useMemo(() => {
-    const catalogoCompleto = [...listCatAlimentos, ...listCatIngredientes];
-
-    return catalogoCompleto.map(item => {
-      const isConcentrado = listCatAlimentos.some(c => c.id === item.id);
-      const catSacos = isConcentrado ? (item.librasPorSaco || 50) : (item.librasPorSaco || 100);
-
-      const compradosSacos = listCompras.filter(c => c.tipo === item.nombre).reduce((s, c) => s + (c.sacos || 0), 0);
-      const compradosLbs = compradosSacos * catSacos;
-
-      const consumidoLbs = listAlimentos.reduce((acc, a) => {
-        if (!a.esSuplemento && a.tipo === item.nombre) return acc + (a.cantidadLb || 0);
-        if (a.esSuplemento && Array.isArray(a.ingredientesUsados)) {
-          const match = a.ingredientesUsados.find(u => u.nombre === item.nombre);
-          if (match) return acc + (match.libras || 0);
-        }
-        return acc;
-      }, 0);
-
-      const stockLbs = Math.max(0, compradosLbs - consumidoLbs);
-      return { ...item, isConcentrado, stockSacos: stockLbs / catSacos, stockLbs, consumidoLbs };
-    });
-  }, [listCompras, listAlimentos, listCatAlimentos, listCatIngredientes]);
+  const inventarioCentral = useMemo(() =>
+    calcularInventarioCentral(listCompras, listAlimentos, listCatAlimentos, listCatIngredientes),
+    [listCompras, listAlimentos, listCatAlimentos, listCatIngredientes]);
 
   const inventarioMedico = useMemo(() => {
-    return listCatalogoMedico.map(item => {
-      const entradas = listComprasMedicas.filter(c => c.productoId === item.id);
-      const salidas = listUsosMedicos.filter(u => u.productoId === item.id);
-      const cantidadComprada = entradas.reduce((sum, c) => sum + (Number(c.cantidad) || 0), 0);
-      const costoComprado = entradas.reduce((sum, c) => sum + (Number(c.costoTotal) || 0), 0);
-      const cantidadUsada = salidas.reduce((sum, u) => sum + (Number(u.cantidad) || 0), 0);
-      const costoUsado = salidas.reduce((sum, u) => sum + (Number(u.costo) || 0), 0);
-      const stock = Math.max(0, cantidadComprada - cantidadUsada);
-      const costoPromedio = cantidadComprada > 0 ? costoComprado / cantidadComprada : 0;
-      const hoy = new Date(`${todayIso()}T00:00:00`);
-      const vencimientos = entradas
-        .filter(c => c.vencimiento && stock > 0)
-        .map(c => {
-          const diffDias = Math.ceil((new Date(`${c.vencimiento}T00:00:00`) - hoy) / 86_400_000);
-          return { ...c, diffDias };
-        })
+    const hoy = new Date(`${todayIso()}T00:00:00`);
+    return calcularInventarioProductos(listCatalogoMedico, listComprasMedicas, listUsosMedicos).map(item => {
+      const vencimientos = listComprasMedicas
+        .filter(c => c.productoId === item.id && c.vencimiento && item.stock > 0)
+        .map(c => ({ ...c, diffDias: Math.ceil((new Date(`${c.vencimiento}T00:00:00`) - hoy) / 86_400_000) }))
         .sort((a, b) => a.diffDias - b.diffDias);
-      const proximoVencimiento = vencimientos[0] || null;
-
-      return {
-        ...item,
-        stock,
-        cantidadComprada,
-        cantidadUsada,
-        costoPromedio,
-        valorStock: Math.max(0, costoComprado - costoUsado),
-        proximoVencimiento,
-        bajoStock: stock <= (Number(item.stockMinimo) || 0)
-      };
+      return { ...item, proximoVencimiento: vencimientos[0] || null };
     });
   }, [listCatalogoMedico, listComprasMedicas, listUsosMedicos]);
 
-  // Stock de insumos: lo comprado menos lo consumido por los corrales. El costo promedio
-  // se recalcula con cada compra, igual que en la bodega médica.
-  const inventarioInsumos = useMemo(() => listCatalogoInsumos.map(item => {
-    const entradas = listComprasInsumos.filter(c => c.productoId === item.id);
-    const salidas = listUsosInsumos.filter(u => u.productoId === item.id);
-    const cantidadComprada = entradas.reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
-    const costoComprado = entradas.reduce((s, c) => s + (Number(c.costoTotal) || 0), 0);
-    const cantidadUsada = salidas.reduce((s, u) => s + (Number(u.cantidad) || 0), 0);
-    const costoUsado = salidas.reduce((s, u) => s + (Number(u.costo) || 0), 0);
-    const stock = Math.max(0, cantidadComprada - cantidadUsada);
-
-    return {
-      ...item,
-      stock,
-      cantidadComprada,
-      cantidadUsada,
-      costoPromedio: cantidadComprada > 0 ? costoComprado / cantidadComprada : 0,
-      valorStock: Math.max(0, costoComprado - costoUsado),
-      bajoStock: stock <= (Number(item.stockMinimo) || 0)
-    };
-  }), [listCatalogoInsumos, listComprasInsumos, listUsosInsumos]);
+  const inventarioInsumos = useMemo(() =>
+    calcularInventarioProductos(listCatalogoInsumos, listComprasInsumos, listUsosInsumos),
+    [listCatalogoInsumos, listComprasInsumos, listUsosInsumos]);
 
   const handleAgregarInsumoCatalogo = (e) => {
     e.preventDefault();
@@ -1947,77 +1825,23 @@ ${JSON.stringify(contextoGranja)}`;
   }
 
   // --- PLATAFORMA DE EMPLEADOS ---
-  // La app de empleados no lee los datos de la granja: solo este catálogo (corrales
-  // con lote activo y nombres de productos, sin precios), que se publica desde aquí.
-  const catalogoEmpleados = isAppReady
-    ? construirCatalogoEmpleados({
-        corrales: listCorrales,
-        lotes: listLotes,
-        infoPorLote: Object.fromEntries(
-          listLotes.filter(l => l.estado === 'Activo').map(lote => {
-            const stats = calcularEstadisticasLote(lote);
-            const contexto = resolverContextoTolvaQr({
-              corral: listCorrales.find(c => String(c.id) === String(lote.corralId)) || { id: lote.corralId, nombre: 'Corral' },
-              loteActivo: lote,
-              stats,
-              cronograma: CRONOGRAMA_ALIMENTACION,
-              catalogoAlimento: listCatAlimentos,
-              inventarioCentral
-            });
-            return [lote.id, { cerdos: stats.cantidadActual, fase: contexto.faseActual, alimentoSugerido: contexto.alimentoSugerido }];
-          })
-        ),
-        catalogoAlimento: listCatAlimentos,
-        catalogoMedico: listCatalogoMedico,
-        catalogoInsumos: listCatalogoInsumos
-      })
-    : null;
-  useSincronizarCatalogoEmpleados(db, appId, catalogoEmpleados);
-  const capturasPendientes = useCapturasPendientes(db, appId);
+  const publicacion = usePublicacionCatalogo(db, appId);
+  const { pendientes: capturasPendientes, error: errorPendientes, cargando: cargandoPendientes } = useCapturasPendientes(db, appId);
 
   // Convierte lo que anotaron los empleados en registros reales (con costo y descuento
   // de bodega). Los ids salen de la captura, así que reintentar no duplica nada.
   const aplicarCapturasEmpleado = async (capturas) => {
-    const { cambios, resultados } = aplicarCapturas(capturas, {
-      lotes: listLotes,
-      catalogoAlimento: listCatAlimentos,
-      inventarioCentral,
-      inventarioMedico,
-      inventarioInsumos,
-      vivosPorLote: (loteId) => {
-        const lote = listLotes.find(l => l.id === loteId);
-        return lote ? calcularEstadisticasLote(lote).cantidadActual : 0;
-      },
-      existentes: {
-        alimentos: listAlimentos,
-        pesos: listPesos,
-        bajas: listBajas,
-        vacunas: listVacunas,
-        usosInsumos: listUsosInsumos
-      }
+    const resultados = await aprobarRegistros(db, appId, user, capturas, {
+      agro_catalogo: INITIAL_CATALOGO,
+      agro_catalogo_medico: INITIAL_CATALOGO_MEDICO,
+      agro_catalogo_insumos: INITIAL_CATALOGO_INSUMOS
     });
-
-    const agregar = (nuevos) => (prev) => {
-      const actuales = safeArr(prev);
-      const ids = new Set(actuales.map(r => r.id));
-      return [...actuales, ...nuevos.filter(r => !ids.has(r.id))];
-    };
-    // Primero los registros secundarios (gasto, uso de farmacia) y al final el principal,
-    // que es el que marca la captura como ya aplicada.
-    if (cambios.gastosExtra.length > 0) await setGastosExtra(agregar(cambios.gastosExtra));
-    if (cambios.usosMedicos.length > 0) await setUsosMedicos(agregar(cambios.usosMedicos));
-    if (cambios.alimentos.length > 0) await setAlimentos(agregar(cambios.alimentos));
-    if (cambios.pesos.length > 0) await setPesos(agregar(cambios.pesos));
-    if (cambios.bajas.length > 0) await setBajas(agregar(cambios.bajas));
-    if (cambios.vacunas.length > 0) await setVacunas(agregar(cambios.vacunas));
-    if (cambios.usosInsumos.length > 0) await setUsosInsumos(agregar(cambios.usosInsumos));
-
     const aplicadas = resultados.filter(r => r.ok && !r.yaAplicada).length;
     if (aplicadas > 0) {
       emitirNotificacionPush({
         tipo: 'sistema',
         titulo: 'Registros de empleados aprobados',
-        descripcion: `${aplicadas} registro${aplicadas === 1 ? '' : 's'} de la app de empleados`
+        descripcion: `${aplicadas} registro${aplicadas === 1 ? '' : 's'} de empleados`
       });
     }
     return resultados;
@@ -10272,9 +10096,11 @@ return (
               db={db}
               appId={appId}
               user={user}
+              publicacion={publicacion}
               pendientes={capturasPendientes}
+              errorPendientes={errorPendientes}
+              cargandoPendientes={cargandoPendientes}
               onAplicar={aplicarCapturasEmpleado}
-              urlEmpleados={import.meta.env.VITE_URL_APP_EMPLEADOS || ''}
             />
           )}
         </div>
@@ -10600,21 +10426,24 @@ function App() {
     );
   }
 
-  // Cuentas sin aprobar o de empleados: no se monta el ERP ni se pide ningún dato.
+  if (acceso.estado === ROL.empleado) {
+    return <RegistroEmpleado key={user.uid} db={db} appId={globalAppId} user={user} onSalir={() => signOut(auth)} />;
+  }
+
   if (acceso.estado !== ROL.admin) {
     return (
       <AccesoRestringido
+        db={db} appId={globalAppId}
         estado={acceso.estado}
         user={user}
         marca={marcaGuerraFarm}
-        urlEmpleados={import.meta.env.VITE_URL_APP_EMPLEADOS || ''}
         onSalir={() => signOut(auth)}
       />
     );
   }
 
   // SI EL USUARIO ES ADMINISTRADOR, CARGAMOS EL ERP
-  return <Porcicontrol user={user} db={db} appId={globalAppId} />;
+  return <Porcicontrol key={user.uid} user={user} db={db} appId={globalAppId} />;
 }
 
 export default App;

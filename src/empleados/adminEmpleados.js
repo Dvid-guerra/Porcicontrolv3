@@ -1,53 +1,40 @@
 // Lado administrador de la plataforma de empleados (lo usa la app principal).
-import { useEffect, useState } from 'react';
-import { onSnapshot, query, setDoc, where } from 'firebase/firestore';
-import { ESTADO_CAPTURA, firmaCatalogo } from '../domain/capturasEmpleado.js';
-import { colCapturas, refCatalogoEmpleados } from './accesos.js';
+import { useEffect, useState, useCallback } from 'react';
+import { onSnapshot, query, where } from 'firebase/firestore';
+import { ESTADO_CAPTURA } from '../domain/capturasEmpleado.js';
+import { colCapturas, mensajeFirestore } from './accesos.js';
 
-/**
- * Mantiene publicado el catálogo que lee la app de empleados (corrales con lote
- * activo y listas de productos, sin precios). Solo escribe cuando algo cambió.
- */
-export function useSincronizarCatalogoEmpleados(db, appId, catalogo) {
-  // El catálogo se recalcula en cada render; la firma (texto) es lo que decide si cambió.
-  const firmaLocal = catalogo ? firmaCatalogo(catalogo) : null;
-  // undefined = todavía no se sabe qué hay publicado; null = no hay nada publicado.
-  const [firmaRemota, setFirmaRemota] = useState(undefined);
+import { publicarCatalogo } from '../domain/granja/publicarCatalogo.js';
 
-  useEffect(() => onSnapshot(
-    refCatalogoEmpleados(db, appId),
-    (snap) => {
-      if (!snap.exists()) {
-        setFirmaRemota(null);
-        return;
-      }
-      const { actualizadoEn: _actualizadoEn, ...publicado } = snap.data();
-      setFirmaRemota(firmaCatalogo(publicado));
-    },
-    () => setFirmaRemota(undefined)
-  ), [db, appId]);
-
+export function usePublicacionCatalogo(db, appId) {
+  const [estado, setEstado] = useState({ ocupado: true, mensaje: '' });
+  const publicar = useCallback(async () => {
+    setEstado({ ocupado: true, mensaje: 'Publicando catálogo…' });
+    try {
+      await publicarCatalogo(db, appId);
+      setEstado({ ocupado: false, mensaje: 'Catálogo disponible para los empleados.' });
+    } catch (err) {
+      setEstado({ ocupado: false, mensaje: mensajeFirestore(err, 'publicar el catálogo') });
+    }
+  }, [db, appId]);
   useEffect(() => {
-    if (!firmaLocal || firmaRemota === undefined || firmaRemota === firmaLocal) return undefined;
-    const temporizador = setTimeout(() => {
-      setDoc(refCatalogoEmpleados(db, appId), { ...JSON.parse(firmaLocal), actualizadoEn: Date.now() })
-        .catch((err) => console.warn('No se pudo publicar el catálogo de empleados:', err?.code || err));
-    }, 1500);
-    return () => clearTimeout(temporizador);
-  }, [db, appId, firmaLocal, firmaRemota]);
+    publicar();
+    window.addEventListener('online', publicar);
+    return () => window.removeEventListener('online', publicar);
+  }, [publicar]);
+  return { ...estado, publicar };
 }
 
 // Capturas que los empleados enviaron y todavía nadie revisó (más viejas primero).
 export function useCapturasPendientes(db, appId) {
-  const [pendientes, setPendientes] = useState([]);
+  const [estado, setEstado] = useState({ pendientes: [], cargando: true, error: '' });
   useEffect(() => onSnapshot(
     query(colCapturas(db, appId), where('estado', '==', ESTADO_CAPTURA.pendiente)),
-    (snap) => setPendientes(
-      snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
+    (snap) => setEstado({ cargando: false, error: '', pendientes: snap.docs
+        .map((d) => ({ ...d.data(), id: d.id }))
         .sort((a, b) => (Number(a.creadaEn) || 0) - (Number(b.creadaEn) || 0))
-    ),
-    () => setPendientes([])
+    }),
+    (err) => setEstado({ pendientes: [], cargando: false, error: mensajeFirestore(err, 'cargar los registros pendientes') })
   ), [db, appId]);
-  return pendientes;
+  return estado;
 }

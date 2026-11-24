@@ -6,13 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "dev:empleados": "vite --config vite.empleados.config.js",
-    "build:empleados": "vite build --config vite.empleados.config.js",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
     "deploy:rules": "firebase deploy --only firestore:rules",
+    "deploy:empleados": "vite build && firebase deploy --only firestore,hosting",
     "deploy:functions": "firebase deploy --only functions",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
     "deploy": "npm run build && firebase deploy"

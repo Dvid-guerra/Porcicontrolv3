@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  AlertTriangle, Check, CheckCircle, Copy, Inbox, Package, Plus, Scale, ShieldCheck,
+  AlertTriangle, Check, CheckCircle, Inbox, Package, Scale, ShieldCheck,
   Skull, Syringe, Trash2, UserRound, Wheat, X, XCircle
 } from 'lucide-react';
-import { deleteDoc, doc, limit, onSnapshot, orderBy, query, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, limit, onSnapshot, orderBy, query, runTransaction, setDoc, writeBatch } from 'firebase/firestore';
+import { rechazarRegistro } from './revisionRegistros.js';
 import { Button, Card, EmptyState } from '../design-system/primitives.jsx';
 import { ESTADO_CAPTURA, ETIQUETA_TIPO, describirCaptura } from '../domain/capturasEmpleado.js';
-import { ROL, colCapturas, colMiembros, refMiembro, refPersonal, resolverRol } from './accesos.js';
+import { ROL, colCapturas, colInvitaciones, refInvitacion, colMiembros, refMiembro, resolverRol, mensajeFirestore } from './accesos.js';
 
 const ICONO_TIPO = { concentrado: Wheat, medicamento: Syringe, insumo: Package, peso: Scale, baja: Skull };
 const CAMPO = 'h-11 px-3 rounded-ds-md border border-line-strong bg-surface-raised text-ink type-body outline-none focus:border-primary';
@@ -64,7 +65,7 @@ function FilaPendiente({ captura, error, ocupado, onAprobar, onRechazar }) {
           />
           <div className="flex gap-2">
             <Button variant="quiet" onClick={() => setRechazando(false)} className="flex-1 sm:flex-none">Cancelar</Button>
-            <Button variant="primary" type="submit" className="flex-1 sm:flex-none">Confirmar rechazo</Button>
+            <Button variant="primary" type="submit" disabled={ocupado} className="flex-1 sm:flex-none">Confirmar rechazo</Button>
           </div>
         </form>
       )}
@@ -78,15 +79,14 @@ function FilaPendiente({ captura, error, ocupado, onAprobar, onRechazar }) {
   );
 }
 
-function Bandeja({ db, appId, user, pendientes, onAplicar }) {
+function Bandeja({ db, appId, user, pendientes, errorPendientes, cargandoPendientes, onAplicar }) {
   const [errores, setErrores] = useState({});
   const [ocupado, setOcupado] = useState(false);
   const [recientes, setRecientes] = useState([]);
-  const quien = user?.displayName || user?.email || 'Administrador';
 
   useEffect(() => onSnapshot(
     query(colCapturas(db, appId), orderBy('creadaEn', 'desc'), limit(40)),
-    (snap) => setRecientes(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((c) => c.estado !== ESTADO_CAPTURA.pendiente)),
+    (snap) => setRecientes(snap.docs.map((d) => ({ ...d.data(), id: d.id })).filter((c) => c.estado !== ESTADO_CAPTURA.pendiente)),
     () => setRecientes([])
   ), [db, appId]);
 
@@ -99,15 +99,7 @@ function Bandeja({ db, appId, user, pendientes, onAplicar }) {
       resultados.forEach((r) => {
         if (!r.ok) {
           nuevosErrores[r.capturaId] = r.error || 'No se pudo aplicar.';
-          return;
         }
-        // No se espera al servidor: sin señal, el cambio queda en cola local.
-        updateDoc(doc(colCapturas(db, appId), r.capturaId), {
-          estado: ESTADO_CAPTURA.aplicada,
-          revisadaEn: Date.now(),
-          revisadaPor: quien,
-          registroId: r.registroId || ''
-        }).catch((err) => console.warn('No se pudo marcar la captura como aplicada:', err?.code || err));
       });
       setErrores((previos) => {
         const limpio = { ...previos };
@@ -123,28 +115,32 @@ function Bandeja({ db, appId, user, pendientes, onAplicar }) {
     }
   };
 
-  const rechazar = (captura, motivo) => {
-    updateDoc(doc(colCapturas(db, appId), captura.id), {
-      estado: ESTADO_CAPTURA.rechazada,
-      motivoRechazo: motivo,
-      revisadaEn: Date.now(),
-      revisadaPor: quien
-    }).catch((err) => console.warn('No se pudo rechazar la captura:', err?.code || err));
+  const rechazar = async (captura, motivo) => {
+    setOcupado(true);
+    try {
+      await rechazarRegistro(db, appId, user, captura.id, motivo);
+    } catch {
+      setErrores((prev) => ({ ...prev, [captura.id]: 'No se pudo rechazar. Revisá la conexión y el estado del registro.' }));
+    } finally {
+      setOcupado(false);
+    }
   };
 
   return (
     <Card
       title="Bandeja de registros"
-      subtitle="Lo que anotaron los empleados. Al aprobar se descuenta de bodega y se carga el costo al lote."
+      subtitle="Revisá los registros por corral. Al aprobar se actualiza el consumo o la cantidad de cerdos del lote."
       actions={pendientes.length > 1 && (
         <Button variant="primary" icon={CheckCircle} disabled={ocupado} onClick={() => aprobar(pendientes)} className="shrink-0">
           Aprobar todo ({pendientes.length})
         </Button>
       )}
     >
-      {pendientes.length === 0 ? (
+      {errorPendientes ? <p role="alert" className="px-4 pb-4 text-danger">{errorPendientes}</p>
+       : cargandoPendientes ? <p role="status" className="px-4 pb-4">Cargando registros…</p>
+       : pendientes.length === 0 ? (
         <EmptyState icon={Inbox} title="No hay registros por revisar">
-          Cuando un empleado guarde algo en su app, aparece aquí.
+          Cuando un empleado envíe un registro, aparece aquí.
         </EmptyState>
       ) : (
         <ul className="divide-y divide-line border-t border-line">
@@ -189,163 +185,140 @@ function Bandeja({ db, appId, user, pendientes, onAplicar }) {
   );
 }
 
-function Personal({ db, appId }) {
-  const [nombres, setNombres] = useState([]);
-  const [nuevo, setNuevo] = useState('');
-  const ref = useMemo(() => refPersonal(db, appId), [db, appId]);
-
-  useEffect(() => onSnapshot(
-    ref,
-    (snap) => setNombres(Array.isArray(snap.data()?.nombres) ? snap.data().nombres : []),
-    () => setNombres([])
-  ), [ref]);
-
-  const guardar = (lista) => setDoc(ref, { nombres: lista, actualizadoEn: Date.now() })
-    .catch((err) => console.warn('No se pudo guardar el personal:', err?.code || err));
-
-  const agregar = (e) => {
-    e.preventDefault();
-    const nombre = nuevo.trim().slice(0, 60);
-    if (!nombre || nombres.some((n) => n.toLowerCase() === nombre.toLowerCase())) return;
-    guardar([...nombres, nombre]);
-    setNuevo('');
-  };
-
-  return (
-    <Card title="Personal de la granja" subtitle="Los nombres que cada empleado elige al abrir su app. Así sabés quién anotó cada cosa.">
-      <div className="px-4 pb-4 space-y-3">
-        {nombres.length === 0 ? (
-          <p className="type-body text-ink-muted">Todavía no hay nombres. Sin lista, cada quien escribe el suyo.</p>
-        ) : (
-          <ul className="flex flex-wrap gap-2">
-            {nombres.map((nombre) => (
-              <li key={nombre} className="inline-flex items-center gap-1.5 h-10 pl-3 pr-1 rounded-full border border-line-strong bg-surface-raised type-strong">
-                <UserRound size={14} aria-hidden="true" className="text-ink-muted" /> {nombre}
-                <button type="button" aria-label={`Quitar a ${nombre}`} onClick={() => guardar(nombres.filter((n) => n !== nombre))} className="h-8 w-8 rounded-full flex items-center justify-center text-ink-muted hover:bg-surface-sunken">
-                  <X size={14} aria-hidden="true" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <form onSubmit={agregar} className="flex gap-2">
-          <input aria-label="Nombre del empleado" placeholder="Nombre del empleado" value={nuevo} maxLength={60} onChange={(e) => setNuevo(e.target.value)} className={`${CAMPO} flex-1`} />
-          <Button variant="secondary" icon={Plus} type="submit">Agregar</Button>
-        </form>
-      </div>
-    </Card>
-  );
-}
-
-const ETIQUETA_ROL = { [ROL.admin]: 'Administrador', [ROL.empleado]: 'Empleados', [ROL.pendiente]: 'Pendiente' };
+const ETIQUETA_ROL = { [ROL.admin]: 'Administrador', [ROL.empleado]: 'Empleado', [ROL.pendiente]: 'Pendiente' };
 
 function Cuentas({ db, appId, user }) {
-  const [miembros, setMiembros] = useState([]);
+  const [miembros, setMiembros] = useState(null);
+  const [errorLista, setErrorLista] = useState('');
+  const [correo, setCorreo] = useState('');
+  const [invitaciones, setInvitaciones] = useState([]);
+  useEffect(() => onSnapshot(colInvitaciones(db, appId),
+    snap => setInvitaciones(snap.docs.map(d => d.id)),
+    err => setErrorLista(mensajeFirestore(err, 'leer las autorizaciones por correo'))
+  ), [db, appId]);
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => onSnapshot(
     colMiembros(db, appId),
     (snap) => setMiembros(
       snap.docs
-        .map((d) => ({ uid: d.id, ...d.data(), rol: resolverRol(d.data()) }))
+        .map((d) => ({ ...d.data(), uid: d.id, rol: resolverRol(d.data()) }))
         .sort((a, b) => (a.rol === ROL.pendiente ? -1 : 0) - (b.rol === ROL.pendiente ? -1 : 0) || String(a.email || '').localeCompare(String(b.email || '')))
     ),
-    () => setMiembros([])
+    (err) => { setMiembros([]); setErrorLista(mensajeFirestore(err, 'listar las cuentas')); }
   ), [db, appId]);
 
-  const cambiar = (uid, cambios) => {
+  const ejecutar = async (operacion, exito) => {
+    if (guardando) return;
     setError('');
-    updateDoc(refMiembro(db, appId, uid), { ...cambios, revisadoEn: Date.now() })
-      .catch(() => setError('No se pudo cambiar el acceso. Revisá la conexión.'));
-  };
-  const borrar = (uid) => {
-    setError('');
-    deleteDoc(refMiembro(db, appId, uid)).catch(() => setError('No se pudo borrar la solicitud.'));
-  };
-
-  return (
-    <Card title="Cuentas con acceso" subtitle="Quien no esté aprobado aquí no puede ver ni escribir nada, aunque cree una cuenta.">
-      {error && <p role="alert" className="mx-4 mb-3 rounded-ds-md border border-danger bg-danger-soft text-danger px-3 py-2 type-small">{error}</p>}
-      <ul className="divide-y divide-line border-t border-line">
-        {miembros.map((m) => {
-          const esYo = m.uid === user?.uid;
-          return (
-            <li key={m.uid} className="px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2.5">
-              <div className="flex-1">
-                <p className="type-strong text-ink break-all">{m.email || m.nombre || m.uid}{esYo ? ' (vos)' : ''}</p>
-                <p className={`type-small ${m.rol === ROL.pendiente ? 'text-warning' : 'text-ink-muted'}`}>
-                  {m.rol === ROL.pendiente ? 'Pidió acceso — sin aprobar' : ETIQUETA_ROL[m.rol]}
-                </p>
-              </div>
-              {!esYo && (
-                <div className="flex flex-wrap gap-2">
-                  {m.rol !== ROL.empleado && (
-                    <Button variant={m.rol === ROL.pendiente ? 'primary' : 'secondary'} icon={UserRound} onClick={() => cambiar(m.uid, { active: true, role: ROL.empleado })}>
-                      {m.rol === ROL.pendiente ? 'Aprobar como empleados' : 'Pasar a empleados'}
-                    </Button>
-                  )}
-                  {m.rol !== ROL.admin && (
-                    <Button variant="secondary" icon={ShieldCheck} onClick={() => cambiar(m.uid, { active: true, role: ROL.admin })}>
-                      {m.rol === ROL.pendiente ? 'Aprobar como admin' : 'Hacer admin'}
-                    </Button>
-                  )}
-                  {m.rol === ROL.pendiente
-                    ? <Button variant="quiet" icon={Trash2} onClick={() => borrar(m.uid)}>Descartar</Button>
-                    : <Button variant="quiet" icon={X} onClick={() => cambiar(m.uid, { active: false, role: ROL.pendiente })}>Quitar acceso</Button>}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </Card>
-  );
-}
-
-function ComoFunciona({ urlEmpleados }) {
-  const [copiado, setCopiado] = useState(false);
-  const copiar = async () => {
+    setAviso('');
+    setGuardando(true);
     try {
-      await navigator.clipboard.writeText(urlEmpleados);
-      setCopiado(true);
-      setTimeout(() => setCopiado(false), 2000);
-    } catch { /* portapapeles no disponible */ }
+      await operacion();
+      setAviso(exito);
+    } catch (err) {
+      setError(err.code ? mensajeFirestore(err, 'actualizar el acceso') : err.message);
+    } finally {
+      setGuardando(false);
+    }
   };
+  const actualizar = async (m, cambios) => {
+    const batch = writeBatch(db);
+    const ref = refMiembro(db, appId, m.uid);
+    if (cambios) batch.update(ref, { ...cambios, revisadoEn: Date.now(), revisadoPorUid: user.uid });
+    else batch.delete(ref);
+    if (m.email) batch.delete(refInvitacion(db, appId, m.email));
+    await batch.commit();
+  };
+  const cambiar = (m, cambios) => ejecutar(() => actualizar(m, cambios), 'Acceso actualizado.');
+  const borrar = m => ejecutar(() => actualizar(m, null), 'Solicitud descartada.');
+  const autorizarCorreo = event => {
+    event.preventDefault();
+    const email = correo.trim().toLowerCase();
+    const m = miembros?.find(c => c.email?.toLowerCase() === email);
+    ejecutar(async () => {
+      if (!m) {
+        await setDoc(refInvitacion(db, appId, email), { autorizadoPor: user.uid, creadoEn: Date.now() });
+      } else {
+        const ref = refMiembro(db, appId, m.uid);
+        await runTransaction(db, async tx => {
+          const snap = await tx.get(ref);
+          if (!snap.exists()) throw Error('La solicitud ya no existe. Actualizá la lista.');
+          if (resolverRol(snap.data()) === ROL.admin) throw Error('Esta cuenta ya es administradora.');
+          tx.update(ref, { active: true, role: ROL.empleado, revisadoEn: Date.now(), revisadoPorUid: user.uid });
+          tx.delete(refInvitacion(db, appId, email));
+        });
+      }
+      setCorreo('');
+    }, m ? 'Acceso de empleado autorizado para ' + email : 'Autorización preparada. El empleado puede activarla al ingresar con ese correo.');
+  };
+
   return (
-    <Card title="App de empleados">
-      <div className="px-4 pb-4 space-y-3 type-body text-ink-muted">
-        <p>
-          Es un sitio aparte donde solo se registra concentrado, medicamentos, insumos, pesajes y bajas.
-          No muestra precios, costos, ventas ni finanzas.
-        </p>
-        {urlEmpleados ? (
-          <div className="flex flex-col sm:flex-row gap-2">
-            <code className="flex-1 h-11 px-3 flex items-center rounded-ds-md bg-surface-sunken text-ink type-data overflow-x-auto whitespace-nowrap">{urlEmpleados}</code>
-            <Button variant="secondary" icon={copiado ? Check : Copy} onClick={copiar}>{copiado ? 'Copiado' : 'Copiar enlace'}</Button>
+    <Card title="Cuentas y solicitudes de acceso" subtitle="Aprobá una solicitud de la lista o autorizá por correo a un empleado que ya tiene cuenta.">
+      <fieldset disabled={guardando}>
+        <form onSubmit={autorizarCorreo} className="px-4 pb-4 space-y-2">
+          <label htmlFor="correo-empleado" className="type-strong">Correo del empleado</label>
+          <div className="flex flex-wrap gap-2">
+            <input id="correo-empleado" type="email" required value={correo} onChange={e => setCorreo(e.target.value)} className={CAMPO + ' flex-1 min-w-0'} />
+            <Button type="submit" disabled={!miembros || !!errorLista} variant="primary" icon={UserRound}>Autorizar empleado</Button>
           </div>
-        ) : (
-          <p>Cuando la publiques, poné su dirección en la variable <code className="type-data text-ink">VITE_URL_APP_EMPLEADOS</code> para verla aquí.</p>
-        )}
-        <ol className="list-decimal pl-5 space-y-1">
-          <li>Creá una cuenta para la granja (correo y contraseña) desde la pantalla de registro.</li>
-          <li>Aprobala abajo como <strong className="text-ink">empleados</strong>.</li>
-          <li>Entrá con esa cuenta en el teléfono de la granja y agregá los nombres del personal.</li>
-        </ol>
-      </div>
+        </form>
+        {invitaciones.map(email => <div key={email} className="px-4 py-2 flex justify-between items-center">
+          <span className="type-small">Pendiente de activación · {email}</span>
+          <Button variant="quiet" onClick={() => ejecutar(() => deleteDoc(refInvitacion(db, appId, email)), 'Autorización retirada.')}>Retirar</Button>
+        </div>)}
+        {aviso && <p role="status" className="px-4 pb-3 text-success">{aviso}</p>}
+        {error && <p role="alert" className="px-4 pb-3 text-danger">{error}</p>}
+        {errorLista ? <p role="alert" className="px-4 pb-3 text-danger">{errorLista}</p>
+          : !miembros ? <p role="status" className="px-4 pb-3">Cargando cuentas…</p>
+          : !miembros.some(m => m.rol === ROL.pendiente) && <p className="px-4 pb-3 type-small text-ink-muted">Sin solicitudes pendientes.</p>}
+        <ul className="divide-y divide-line border-t border-line">
+          {miembros?.map((m) => {
+            const esYo = m.uid === user?.uid;
+            return (
+              <li key={m.uid} className="px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2.5">
+                <div className="flex-1">
+                  <p className="type-strong text-ink break-all">{m.email || m.nombre || m.uid}{esYo ? ' (vos)' : ''}</p>
+                  <p className={`type-small ${m.rol === ROL.pendiente ? 'text-warning' : 'text-ink-muted'}`}>
+                    {m.rol === ROL.pendiente ? 'Pidió acceso — sin aprobar' : ETIQUETA_ROL[m.rol]}
+                  </p>
+                </div>
+                {!esYo && (
+                  <div className="flex flex-wrap gap-2">
+                    {m.rol !== ROL.empleado && (
+                      <Button variant={m.rol === ROL.pendiente ? 'primary' : 'secondary'} icon={UserRound} onClick={() => cambiar(m, { active: true, role: ROL.empleado })}>
+                        {m.rol === ROL.pendiente ? 'Aprobar como empleado' : 'Pasar a empleado'}
+                      </Button>
+                    )}
+                    {m.rol !== ROL.admin && (
+                      <Button variant="secondary" icon={ShieldCheck} onClick={() => cambiar(m, { active: true, role: ROL.admin })}>
+                        {m.rol === ROL.pendiente ? 'Aprobar como admin' : 'Hacer admin'}
+                      </Button>
+                    )}
+                    {m.rol === ROL.pendiente
+                      ? <Button variant="quiet" icon={Trash2} onClick={() => borrar(m)}>Descartar</Button>
+                      : <Button variant="quiet" icon={X} onClick={() => cambiar(m, { active: false, role: ROL.pendiente })}>Quitar acceso</Button>}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </fieldset>
     </Card>
   );
 }
 
-// Vista "Empleados" de la app principal.
-export default function PanelEmpleados({ db, appId, user, pendientes, onAplicar, urlEmpleados = '' }) {
+export default function PanelEmpleados({ db, publicacion, appId, user, pendientes, errorPendientes, cargandoPendientes, onAplicar }) {
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-5">
-      <Bandeja db={db} appId={appId} user={user} pendientes={pendientes} onAplicar={onAplicar} />
-      <div className="grid gap-5 lg:grid-cols-2 items-start">
-        <Personal db={db} appId={appId} />
-        <ComoFunciona urlEmpleados={urlEmpleados} />
-      </div>
+      {publicacion && <Card title="Catálogo de corrales" actions={<Button disabled={publicacion.ocupado} onClick={publicacion.publicar}>Publicar catálogo</Button>}>
+        <p role="status" className="px-4 pb-4 type-small">{publicacion.mensaje}</p>
+      </Card>}
       <Cuentas db={db} appId={appId} user={user} />
+      <Bandeja errorPendientes={errorPendientes} cargandoPendientes={cargandoPendientes} db={db} appId={appId} user={user} pendientes={pendientes} onAplicar={onAplicar} />
     </div>
   );
 }

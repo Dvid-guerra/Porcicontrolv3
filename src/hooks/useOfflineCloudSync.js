@@ -1,3 +1,4 @@
+import { actualizarCatalogoEnTransaccion } from '../domain/granja/publicarCatalogo.js';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   clearIndexedDbPersistence,
@@ -163,6 +164,7 @@ export async function sincronizarColaPendiente({ db, appId, userUid }) {
             local: entrada.targetValue,
             remoto
           });
+          await actualizarCatalogoEnTransaccion(transaction, db, appId, { [key]: mezclado });
           transaction.set(docRef, {
             data: mezclado,
             updatedAt: Date.now(),
@@ -393,6 +395,7 @@ export function useCloudStorage(key, initialValue, user, dbInstance, appId) {
           const snapshot = await transaction.get(docRef);
           const remoteValue = snapshot.exists() ? snapshot.data().data : initialValueRef.current;
           const valueToStore = value instanceof Function ? value(remoteValue) : value;
+          await actualizarCatalogoEnTransaccion(transaction, dbInstance, appId, { [key]: valueToStore });
           transaction.set(docRef, {
             data: valueToStore,
             updatedAt: Date.now(),
@@ -475,9 +478,10 @@ export async function ejecutarTransaccionMultiClaveOffline({
       );
 
       const storage = getLocalStorage();
-      snapshots.forEach(({ key, ref, snapshot }) => {
-        const current = snapshot.exists() ? snapshot.data().data : [];
-        const next = updates[key](current);
+      const cambios = Object.fromEntries(snapshots.map(({ key, snapshot }) => [key, updates[key](snapshot.exists() ? snapshot.data().data : [])]));
+      await actualizarCatalogoEnTransaccion(transaction, db, appId, cambios);
+      snapshots.forEach(({ key, ref }) => {
+        const next = cambios[key];
         transaction.set(ref, {
           data: next,
           updatedAt: Date.now(),

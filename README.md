@@ -4,7 +4,7 @@ Aplicación web para controlar lotes porcinos, alimentación, inventario, sanida
 
 ## Requisitos
 
-- Node.js 20 o superior
+- Node.js 22 para las funciones de Firebase
 - Un proyecto Firebase con Authentication, Firestore, Functions y App Check
 - Firebase CLI autenticado para despliegues
 
@@ -27,36 +27,31 @@ Crear una cuenta ya no da acceso. Cada cuenta tiene un documento en `artifacts/a
 | Rol | `active` / `role` | Qué puede hacer |
 | --- | --- | --- |
 | Administrador | `true` / `admin` (o sin `role`) | App principal completa. Aprueba cuentas y registros de empleados. |
-| Empleados | `true` / `empleado` | Solo la app de empleados: lee el catálogo sin precios y crea capturas. |
+| Empleados | `true` / `empleado` | Consulta existencias de concentrado, envía registros por corral y ve sus propias solicitudes. |
 | Pendiente | `false` / `pendiente` | Nada. Aparece en **Empleados → Cuentas con acceso** para aprobarla. |
 
 Las reglas (`firestore.rules`) son las que bloquean; la interfaz solo las refleja.
 
 **Primer administrador (una sola vez):** después de publicar las reglas, entra a la app, y en la consola de Firebase → Firestore abre `artifacts/agrocontrol-local/members/{tu uid}` y pon `active: true` y `role: "admin"`. Las demás cuentas se aprueban desde la app.
 
-## Plataforma de empleados
+## Registros por corral
 
-Sitio aparte (otro build y otra URL) para que el personal registre concentrado, medicamentos, insumos, pesajes y bajas sin ver la app principal.
+Todo el personal inicia sesión en la misma dirección. Desde **Empleados → Cuentas con acceso**, asigná el rol de empleado a la cuenta de cada persona.
 
-- Código: `empleados.html` + `src/empleados/`. Lógica compartida y probada en `src/domain/capturasEmpleado.js`.
-- `npm run dev:empleados` abre `http://localhost:5173/empleados.html`; `npm run build:empleados` genera `dist-empleados/`.
-- Despliegue: segundo proyecto en Vercel sobre este mismo repositorio, con Build Command `npm run build:empleados` y Output Directory `dist-empleados`. Usa las mismas variables `VITE_FIREBASE_*`.
-- Opcional: `VITE_URL_APP_EMPLEADOS` en la app principal muestra el enlace en la vista Empleados.
+1. El empleado consulta el concentrado disponible y elige el corral para reportar concentrado servido, aplicación de medicamento, uso de insumo o baja.
+2. La solicitud queda pendiente e identificada con su cuenta. Si trabaja sin señal, se envía al reconectar. Puede retirar sus solicitudes pendientes.
+3. En **Empleados → Bandeja de registros**, el administrador aprueba o rechaza con conexión. Al aprobar, se comprueban las existencias o los animales vivos y se guardan juntos el movimiento y su autorización. Una solicitud rechazada conserva el motivo en el historial del empleado.
 
-Flujo de datos:
-
-1. La app principal publica `granja_empleados/catalogo` (corrales con lote activo y nombres de productos, **sin precios ni costos**) cada vez que algo cambia.
-2. El empleado guarda una *captura* en `granja_capturas` (funciona sin señal; se envía al reconectar).
-3. Un administrador la aprueba en **Empleados → Bandeja de registros**. Ahí se valida el stock, se calcula el costo y se crean los registros reales del lote. Rechazarla no toca nada.
+Tras desplegar, abrí una vez la app como administrador con conexión para publicar el catálogo inicial. Los cambios de inventario, corrales y lotes actualizan ese catálogo en la misma transacción. Después los empleados pueden consultarlo aunque el administrador haya cerrado sesión. En Empleados → Catálogo de corrales podés volver a publicarlo. En Empleados podés autorizar por correo una cuenta que ya exista en Firebase Authentication, aunque todavía no figure en la lista de solicitudes. Para publicar este cambio, desplegá Firestore y Hosting con el comando de empleados. El personal con una instalación del sitio anterior debe abrir la dirección principal.
 
 ## Comandos
 
 - `npm run lint`: análisis estático.
 - `npm test`: pruebas de cálculos productivos y financieros.
 - `npm run build`: compilación web.
-- `npm run build:empleados`: compilación de la app de empleados (`dist-empleados/`).
 - `npm run preview`: sirve localmente la compilación de `dist/`.
 - `npm run deploy:rules`: reglas de Firestore.
+- `npm run deploy:empleados -- --project agroporcina`: compila y publica Firestore y Hosting para el flujo de empleados en Spark.
 - `npm run deploy:functions`: proxy seguro del asistente.
 
 ## Seguridad

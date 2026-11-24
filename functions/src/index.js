@@ -20,7 +20,7 @@ export const askFarmAssistant = onCall(
       .doc(`artifacts/${APP_ID}/members/${request.auth.uid}`)
       .get();
     // El asistente ve finanzas de la granja: solo administradores (no la cuenta de empleados).
-    if (!membership.exists || membership.data()?.active !== true || membership.data()?.role === 'empleado') {
+    if (!membership.exists || membership.data()?.active !== true || ![undefined, 'admin'].includes(membership.data()?.role)) {
       throw new HttpsError('permission-denied', 'No perteneces a esta granja.');
     }
 
